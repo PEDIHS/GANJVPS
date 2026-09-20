@@ -675,6 +675,332 @@ class CentralClient:
         r = self.session.post(self.url(f"/v1/commands/{int(command_id)}/result"), json=payload, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
 
+
+def _current_wireguard_endpoint() -> str:
+    if not WG_CONF.exists():
+        return ""
+    try:
+        peer = _parse_wireguard_peer_config(WG_CONF.read_text(encoding="utf-8"))
+        return str(peer.get("endpoint") or "").strip()
+    except Exception:
+        return ""
+
+
+def _default_gateway_port() -> str:
+    split = _split_wireguard_endpoint(_current_wireguard_endpoint())
+    return split[1] if split else "51820"
+
+
+def _normalize_gateway_candidate(value: Any, index: int = 0) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        raw: dict[str, Any] = {"endpoint": value}
+    elif isinstance(value, dict):
+        raw = dict(value)
+    else:
+        return None
+
+    wg = raw.get("wireguard") if isinstance(raw.get("wireguard"), dict) else {}
+    endpoint = str(raw.get("endpoint") or wg.get("endpoint") or raw.get("host") or "").strip()
+    if endpoint and _split_wireguard_endpoint(endpoint) is None and ":" not in endpoint:
+        endpoint = f"{endpoint}:{_default_gateway_port()}"
+    if not endpoint:
+        return None
+
+    ident = str(raw.get("id") or raw.get("code") or raw.get("name") or f"gateway-{index + 1}")
+    name = str(raw.get("name") or raw.get("label") or ident)
+    try:
+        priority = int(raw.get("priority") if raw.get("priority") is not None else 100)
+    except (TypeError, ValueError):
+        priority = 100
+    return {
+        "id": ident,
+        "name": name,
+        "endpoint": endpoint,
+        "priority": priority,
+        "wireguard": dict(wg),
+        "source": str(raw.get("source") or "central"),
+    }
+
+
+def _local_gateway_candidates() -> list[dict[str, Any]]:
+    data = load_json(GATEWAYS_FILE, {"gateways": []})
+    rows = data.get("gateways") if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for i, row in enumerate(rows):
+        item = _normalize_gateway_candidate(row, i)
+        if item:
+            item["source"] = "local"
+            out.append(item)
+    return out
+
+
+def gateway_candidates(desired: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    if desired is None:
+        state = load_json(STATE_FILE, {})
+        desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
+    desired = desired if isinstance(desired, dict) else {}
+    gateway = desired.get("gateway") if isinstance(desired.get("gateway"), dict) else {}
+
+    sources: list[Any] = []
+    for key in ("gateways",):
+        rows = desired.get(key)
+        if isinstance(rows, list):
+            sources.extend(rows)
+    for key in ("candidates", "gateways", "endpoints"):
+        rows = gateway.get(key)
+        if isinstance(rows, list):
+            sources.extend(rows)
+    if gateway.get("endpoint"):
+        sources.append({
+            "id": gateway.get("id") or "primary",
+            "name": gateway.get("name") or "Primary",
+            "endpoint": gateway.get("endpoint"),
+            "priority": gateway.get("priority", 10),
+            "wireguard": gateway.get("wireguard") or {},
+        })
+    sources.extend(_local_gateway_candidates())
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, row in enumerate(sources):
+        item = _normalize_gateway_candidate(row, i)
+        if not item:
+            continue
+        key = item["endpoint"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+
+    current = _current_wireguard_endpoint()
+    if current and current.lower() not in seen:
+        out.append({
+            "id": "current",
+            "name": "Current gateway",
+            "endpoint": current,
+            "priority": 999,
+            "wireguard": {},
+            "source": "runtime",
+        })
+    return out
+
+
+def _gateway_host(candidate: dict[str, Any]) -> str:
+    split = _split_wireguard_endpoint(str(candidate.get("endpoint") or ""))
+    return split[0] if split else ""
+
+
+def rank_gateways(desired: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    ranked = []
+    for candidate in gateway_candidates(desired):
+        host = _gateway_host(candidate)
+        latency = ping_latency_ms(host) if host else None
+        ranked.append({**candidate, "latency_ms": latency})
+    ranked.sort(key=lambda x: (
+        x.get("latency_ms") is None,
+        float(x.get("latency_ms") or 10**9),
+        int(x.get("priority") or 100),
+    ))
+    return ranked
+
+
+def gateway_ping_ok() -> bool:
+    try:
+        p = run(["ping", "-c", "1", "-W", "2", "10.60.0.1"], timeout=4)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+
+def _rewrite_wireguard_endpoint(config_text: str, endpoint: str) -> str:
+    lines = str(config_text or "").splitlines()
+    section = ""
+    replaced = False
+    out = []
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip().lower()
+        if section == "peer" and stripped.lower().startswith("endpoint") and "=" in raw:
+            prefix = raw[:raw.index("=") + 1]
+            out.append(f"{prefix} {endpoint}")
+            replaced = True
+        else:
+            out.append(raw)
+    if not replaced:
+        raise RuntimeError("wireguard_endpoint_not_found")
+    return "\n".join(out) + "\n"
+
+
+def switch_gateway(candidate: dict[str, Any], verify: bool = True) -> bool:
+    item = _normalize_gateway_candidate(candidate, 0)
+    if not item:
+        raise RuntimeError("invalid_gateway_candidate")
+    if not WG_CONF.exists():
+        raise RuntimeError("wireguard_config_missing")
+
+    old_text = WG_CONF.read_text(encoding="utf-8")
+    old_endpoint = _current_wireguard_endpoint()
+    endpoint = str(item["endpoint"])
+    if endpoint == old_endpoint and (not verify or gateway_ping_ok()):
+        return True
+
+    try:
+        wg = item.get("wireguard") or {}
+        if all(wg.get(k) for k in ("address", "server_public_key", "endpoint")):
+            write_wireguard_config(wg)
+        else:
+            peer = _parse_wireguard_peer_config(old_text)
+            public_key = str(peer.get("public_key") or "")
+            if not public_key:
+                raise RuntimeError("wireguard_peer_key_missing")
+            atomic_write(WG_CONF, _rewrite_wireguard_endpoint(old_text, endpoint), 0o600)
+            live = run(
+                ["wg", "set", "ganj-vps", "peer", public_key, "endpoint", endpoint],
+                timeout=8,
+            )
+            if live.returncode != 0:
+                restart = run(["systemctl", "restart", "wg-quick@ganj-vps"], timeout=20)
+                if restart.returncode != 0:
+                    raise RuntimeError("gateway_switch_restart_failed")
+
+        if verify:
+            time.sleep(1)
+            if not gateway_ping_ok():
+                restart = run(["systemctl", "restart", "wg-quick@ganj-vps"], timeout=20)
+                if restart.returncode != 0:
+                    raise RuntimeError("gateway_switch_verify_restart_failed")
+                time.sleep(1)
+                if not gateway_ping_ok():
+                    raise RuntimeError("gateway_switch_verification_failed")
+
+        state = load_json(STATE_FILE, {})
+        state["active_gateway"] = {
+            "id": item["id"],
+            "name": item["name"],
+            "endpoint": endpoint,
+            "latency_ms": ping_latency_ms(_gateway_host(item)),
+            "switched_at": int(time.time()),
+        }
+        save_json(STATE_FILE, state)
+        return True
+    except Exception:
+        atomic_write(WG_CONF, old_text, 0o600)
+        run(["systemctl", "restart", "wg-quick@ganj-vps"], timeout=20)
+        raise
+
+
+def choose_best_gateway(desired: dict[str, Any] | None = None, force: bool = False) -> dict[str, Any] | None:
+    ranked = rank_gateways(desired)
+    if not ranked:
+        return None
+
+    current_endpoint = _current_wireguard_endpoint()
+    state = load_json(STATE_FILE, {})
+    active = state.get("active_gateway") if isinstance(state.get("active_gateway"), dict) else {}
+    last_switch = int(active.get("switched_at") or 0)
+    gateway = desired.get("gateway") if isinstance(desired, dict) and isinstance(desired.get("gateway"), dict) else {}
+    mode = str(gateway.get("mode") or "automatic").lower()
+
+    current = next((x for x in ranked if x["endpoint"] == current_endpoint), None)
+    best = ranked[0]
+    healthy = gateway_ping_ok()
+
+    should_switch = force or not healthy
+    if not should_switch and mode in {"best", "best_ping", "latency"}:
+        best_ms = best.get("latency_ms")
+        cur_ms = current.get("latency_ms") if current else None
+        cooldown_ok = int(time.time()) - last_switch >= GATEWAY_SWITCH_COOLDOWN
+        if cooldown_ok and best["endpoint"] != current_endpoint:
+            if cur_ms is None or (best_ms is not None and float(cur_ms) - float(best_ms) >= GATEWAY_SWITCH_HYSTERESIS_MS):
+                should_switch = True
+
+    if not should_switch:
+        return current or best
+
+    errors = []
+    for candidate in ranked:
+        if not force and healthy and candidate["endpoint"] == current_endpoint:
+            continue
+        try:
+            if switch_gateway(candidate, verify=True):
+                return candidate
+        except Exception as exc:
+            errors.append(f"{candidate['id']}:{type(exc).__name__}")
+    if errors:
+        state["last_gateway_failover_error"] = ",".join(errors)[:400]
+        state["last_gateway_failover_at"] = int(time.time())
+        save_json(STATE_FILE, state)
+    return None
+
+
+def gateways_list() -> int:
+    ranked = rank_gateways()
+    current = _current_wireguard_endpoint()
+    print("\nGANJ gateways")
+    print("  #   Active  Gateway                  Endpoint                         Ping")
+    print("  --  ------  -----------------------  -------------------------------  --------")
+    for i, row in enumerate(ranked, 1):
+        mark = "★" if row["endpoint"] == current else ""
+        ping = "offline" if row.get("latency_ms") is None else f"{row['latency_ms']:.1f} ms"
+        print(f"  {i:<2}  {mark:<6}  {row['name'][:23]:<23}  {row['endpoint'][:31]:<31}  {ping}")
+    return 0
+
+
+def gateway_add(endpoint: str, name: str = "") -> int:
+    item = _normalize_gateway_candidate({
+        "id": name or endpoint,
+        "name": name or endpoint,
+        "endpoint": endpoint,
+        "source": "local",
+    })
+    if not item:
+        raise RuntimeError("invalid_gateway_endpoint")
+    data = load_json(GATEWAYS_FILE, {"gateways": []})
+    rows = data.get("gateways") if isinstance(data, dict) else []
+    rows = rows if isinstance(rows, list) else []
+    rows = [x for x in rows if str(x.get("endpoint") if isinstance(x, dict) else x) != item["endpoint"]]
+    rows.append({"id": item["id"], "name": item["name"], "endpoint": item["endpoint"]})
+    save_json(GATEWAYS_FILE, {"gateways": rows}, 0o600)
+    print(f"[+] Gateway saved: {item['name']} · {item['endpoint']}")
+    return 0
+
+
+def gateway_remove(identifier: str) -> int:
+    data = load_json(GATEWAYS_FILE, {"gateways": []})
+    rows = data.get("gateways") if isinstance(data, dict) else []
+    rows = rows if isinstance(rows, list) else []
+    kept = []
+    removed = 0
+    for row in rows:
+        item = _normalize_gateway_candidate(row)
+        if item and identifier in {item["id"], item["name"], item["endpoint"]}:
+            removed += 1
+        else:
+            kept.append(row)
+    save_json(GATEWAYS_FILE, {"gateways": kept}, 0o600)
+    print(f"[+] Removed {removed} local gateway(s).")
+    return 0
+
+
+def gateway_switch(identifier: str) -> int:
+    ranked = rank_gateways()
+    if identifier.lower() in {"best", "auto", "automatic"}:
+        chosen = choose_best_gateway(load_json(STATE_FILE, {}).get("desired") or {}, force=True)
+        if not chosen:
+            raise RuntimeError("no_working_gateway")
+        print(f"[+] Active gateway: {chosen['name']} · {chosen['endpoint']}")
+        return 0
+    for row in ranked:
+        if identifier in {row["id"], row["name"], row["endpoint"]}:
+            switch_gateway(row, verify=True)
+            print(f"[+] Active gateway: {row['name']} · {row['endpoint']}")
+            return 0
+    raise RuntimeError("gateway_not_found")
+
+
 def _parse_wireguard_peer_config(text: str) -> dict[str, str]:
     section = ""
     peer: dict[str, str] = {}
