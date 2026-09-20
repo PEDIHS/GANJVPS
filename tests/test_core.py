@@ -4,7 +4,7 @@ from pathlib import Path
 
 import ganj_vps
 import panel_sync
-from panel_sync import _alloc_ports, _location_map, PasarGuardAdapter
+from panel_sync import _alloc_ports, _location_map, choose_port_block, PasarGuardAdapter, SanaeiAdapter
 
 
 class LocationTests(unittest.TestCase):
@@ -25,6 +25,15 @@ class LocationTests(unittest.TestCase):
     def test_port_allocator_does_not_collide(self):
         used = {20000, 20002}
         self.assertEqual(_alloc_ports(used, 3, 20000), [20001, 20003, 20004])
+
+
+    def test_collision_aware_block_skips_busy_range(self):
+        old = panel_sync.system_listening_ports
+        panel_sync.system_listening_ports = lambda: {20000}
+        try:
+            self.assertEqual(choose_port_block(set(), 3, 20000), [21000, 21001, 21002])
+        finally:
+            panel_sync.system_listening_ports = old
 
 
 class PasarGuardGenerationTests(unittest.TestCase):
@@ -71,6 +80,80 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertIn("ganj-egress-nl", outbound_tags)
         socks = next(x for x in cfg["outbounds"] if x["tag"] == "ganj-egress-de")
         self.assertEqual(socks["settings"]["servers"][0], {"address": "10.60.0.1", "port": 1082})
+
+
+    def test_host_clone_can_follow_generated_inbound_port(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-host-test-"))
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test",
+            "password": "test",
+            "core_id": 1,
+            "template_inbound_tag": "template",
+            "template_host_id": 77,
+            "base_port": 23000,
+            "host_port_mode": "inbound",
+        })
+        adapter.login = lambda: None
+        core = {
+            "name": "main", "type": "xray",
+            "exclude_inbound_tags": [], "fallbacks_inbound_tags": [],
+            "config": {
+                "inbounds": [{"tag": "template", "port": 443, "protocol": "vless", "settings": {}}],
+                "outbounds": [], "routing": {"rules": []},
+            },
+        }
+        hosts = [{"id": 77, "remark": "template host", "inbound_tag": "template", "port": 443, "address": ["edge.test"], "priority": 0}]
+        adapter.get_core = lambda: core
+        adapter.get_hosts = lambda: list(hosts)
+        adapter.update_core = lambda c, config: core.update({"config": config})
+        adapter.delete_host = lambda host_id: None
+        created_hosts = []
+        adapter.create_host = lambda host: created_hosts.append(host.copy())
+        result = adapter.install_locations([
+            {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+            {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
+        ])
+        self.assertEqual([x["port"] for x in created_hosts], [23000, 23001])
+        self.assertEqual([x["inbound_tag"] for x in created_hosts], ["ganj-de", "ganj-nl"])
+        self.assertEqual(len(result["installed"]), 2)
+
+
+class SanaeiGenerationTests(unittest.TestCase):
+    def test_install_generates_country_inbounds_and_routing(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-xui-test-"))
+        adapter = SanaeiAdapter({
+            "url": "http://127.0.0.1:2053",
+            "username": "test", "password": "test",
+            "template_inbound_id": 9, "base_port": 24000,
+        })
+        adapter.login = lambda: None
+        inbounds = [{
+            "id": 9, "remark": "template", "port": 443, "protocol": "vless",
+            "listen": "", "enable": True, "settings": {}, "streamSettings": {}, "sniffing": {},
+        }]
+        adapter.list_inbounds = lambda: list(inbounds)
+        next_id = [30]
+        def add(payload):
+            row = payload.copy()
+            row["id"] = next_id[0]
+            next_id[0] += 1
+            inbounds.append(row)
+        adapter.add_inbound = add
+        adapter.delete_inbound = lambda inbound_id: None
+        xray = {"outbounds": [{"tag": "direct", "protocol": "freedom"}], "routing": {"rules": []}}
+        adapter.get_xray = lambda: (xray, "https://example.test/204")
+        adapter.update_xray = lambda cfg, test_url: xray.update(cfg)
+        result = adapter.install_locations([
+            {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+            {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
+        ])
+        managed = [x for x in inbounds if str(x.get("remark", "")).startswith("GANJ ")]
+        self.assertEqual([x["port"] for x in managed], [24000, 24001])
+        self.assertEqual(len(result["installed"]), 2)
+        tags = {x.get("tag") for x in xray["outbounds"]}
+        self.assertIn("ganj-egress-de", tags)
+        self.assertIn("ganj-egress-fr", tags)
 
 
 if __name__ == "__main__":
