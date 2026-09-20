@@ -31,7 +31,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -1267,7 +1267,7 @@ def established_connections_by_port(ports: set[int]) -> dict[int, int]:
 def socks5_latency_ms(
     proxy_host: str,
     proxy_port: int,
-    target_host: str = "1.1.1.1",
+    target_host: str = "www.cloudflare.com",
     target_port: int = 443,
     timeout: float = LOCATION_PROBE_TIMEOUT,
 ) -> float | None:
@@ -1278,14 +1278,31 @@ def socks5_latency_ms(
             s.sendall(b"\x05\x01\x00")
             if s.recv(2) != b"\x05\x00":
                 return None
-            target_ip = socket.inet_aton(target_host)
-            req = b"\x05\x01\x00\x01" + target_ip + int(target_port).to_bytes(2, "big")
+
+            try:
+                target = socket.inet_pton(socket.AF_INET, target_host)
+                req = b"\x05\x01\x00\x01" + target
+            except OSError:
+                try:
+                    target = socket.inet_pton(socket.AF_INET6, target_host)
+                    req = b"\x05\x01\x00\x04" + target
+                except OSError:
+                    encoded = target_host.encode("idna")
+                    if not encoded or len(encoded) > 255:
+                        return None
+                    # Ask the SOCKS server/outbound to resolve the hostname.
+                    # Many healthy public proxies reject a literal 1.1.1.1:443
+                    # connection while normal HTTPS domains work correctly.
+                    req = b"\x05\x01\x00\x03" + bytes([len(encoded)]) + encoded
+
+            req += int(target_port).to_bytes(2, "big")
             s.sendall(req)
             head = s.recv(4)
             if len(head) < 4 or head[1] != 0x00:
                 return None
+
         return round((time.monotonic() - started) * 1000, 1)
-    except (OSError, ValueError):
+    except (OSError, ValueError, UnicodeError):
         return None
 
 
