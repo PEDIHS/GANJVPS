@@ -1,6 +1,6 @@
 # GANJ VPS
 
-GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.4.0**.
+GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.4.1**.
 
 It is designed for servers running supported Xray panels such as Sanaei 3x-ui and PasarGuard, and connects them to a GANJ central gateway through a managed WireGuard control/data plane.
 
@@ -23,7 +23,12 @@ It is designed for servers running supported Xray panels such as Sanaei 3x-ui an
 - Automatic desired-state reconciliation for newly available locations
 - Live RX/TX Mbps, active inbound connections and per-location SOCKS latency
 - Hourly safe auto-update checks with deferred self-restart
-- Interactive core/inbound selection for Sanaei 3x-ui and PasarGuard\n- Collision-aware automatic local port allocation\n- Automatic PasarGuard Host cloning with selectable port policy
+- Emerald/Gold CLI installer and controller UI
+- Central endpoint hidden from the operator during installation
+- Automatic local PasarGuard endpoint discovery; only admin credentials are requested for connection
+- Explicit manual Core, template Inbound, Host and Host-port-policy selection
+- Collision-aware automatic local port allocation
+- PasarGuard Host cloning from the operator-selected template
 - Safe GANJ-owned location generation with backups and isolated tags
 - One-time enrollment tokens with license duration and optional traffic quota
 - Per-node WireGuard usage accounting and entitlement enforcement
@@ -40,7 +45,7 @@ GANJ VPS is an independent implementation. Other public projects may be reviewed
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/install.sh)"
 ```
 
-The installer asks for the GANJ Central URL and a one-time enrollment token. After enrollment it can optionally guide the operator through local panel configuration and location installation.
+The installer asks for the one-time enrollment token; the GANJ Central endpoint is not exposed as an installer question. The supported local panel is detected automatically when unambiguous. For PasarGuard, its local API URL is discovered automatically and the operator enters only the admin username/password for the connection. Core, template Inbound, Host and Host port policy are deliberately selected manually before any cloning or location sync.
 
 ## CLI
 
