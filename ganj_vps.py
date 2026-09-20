@@ -1342,6 +1342,10 @@ def heartbeat_payload() -> dict[str, Any]:
     state = load_json(STATE_FILE, {})
     runtime = light_runtime_metrics()
     desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
+    wg = {**wg_status(), "gateway_reachable": gateway_tunnel_ok()}
+    transfer = _wg_transfer_bytes()
+    if transfer is not None:
+        wg["rx_bytes"], wg["tx_bytes"] = transfer
     return {
         "agent_version": APP_VERSION,
         "hostname": socket.gethostname(),
@@ -1349,7 +1353,7 @@ def heartbeat_payload() -> dict[str, Any]:
         "os": os_summary(),
         "panel": panel,
         "panel_runtime": panel_runtime_status(panel),
-        "wireguard": {**wg_status(), "gateway_reachable": gateway_tunnel_ok()},
+        "wireguard": wg,
         "gateway": {
             "active": state.get("active_gateway") or {},
             "candidate_count": len(gateway_candidates(desired)),
