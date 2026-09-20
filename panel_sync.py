@@ -76,6 +76,8 @@ def system_listening_ports() -> set[int]:
 
 
 def choose_port_block(existing: set[int], count: int, preferred_base: int = 20000, ignore_listening: set[int] | None = None) -> list[int]:
+    if int(count) <= 0:
+        return []
     live = system_listening_ports()
     if ignore_listening:
         live -= set(ignore_listening)
