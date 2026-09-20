@@ -10,6 +10,11 @@ adds the operator-facing Representatives model.
 The deployed patch adds:
 
 - one-time enrollment token to managed-panel linkage
+- strict binding to one public IP + server fingerprint + WireGuard public key
+- persistent `ip_mismatch` / `identity_mismatch` lock requiring operator rotation
+- data-plane WireGuard peer removal when the observed endpoint IP changes
+- token rotation that burns the old token, revokes the old panel and preserves representative quota/expiry/used traffic
+- pending-token revoke from the admin panel
 - `/admin/ganj/representatives`
 - `/admin/ganj/enrollment-tokens`
 - token status, issue/use/expiry information
@@ -29,6 +34,14 @@ Production smoke checks performed after deployment:
 - WireGuard active
 - representatives API returns 200
 - pending representative create/list/cleanup round trip passes
+- same-IP authenticated heartbeat succeeds
+- changed-IP heartbeat is rejected with HTTP 403 and persists `ip_mismatch`
+- old token reuse after rotation is rejected
+- replacement token enrolls on a new server/IP under the same representative ID
+- used traffic, traffic limit and license expiry survive server/IP rotation
+- representative list remains one row after multiple token/server generations
+- `ip_mismatch` peer is removed from the live WireGuard interface
+- pending token revoke is irreversible and prevents enrollment
 - panel inline JavaScript passes `node --check`
 - unauthenticated desired-state endpoint remains 401
 - existing `/nodes` route remains available for backward compatibility

@@ -112,12 +112,17 @@ def init_db() -> None:
                 issued_at INTEGER NOT NULL,
                 expires_at INTEGER,
                 used_at INTEGER,
-                node_id TEXT
+                node_id TEXT,
+                bound_ip TEXT,
+                bound_fingerprint TEXT,
+                bound_wg_public_key TEXT
             );
             CREATE TABLE IF NOT EXISTS nodes (
                 id TEXT PRIMARY KEY,
                 representative_id TEXT NOT NULL REFERENCES representatives(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
+                bound_ip TEXT,
+                fingerprint TEXT,
                 secret_hash TEXT NOT NULL,
                 wg_public_key TEXT NOT NULL,
                 wg_ip TEXT NOT NULL,
@@ -155,6 +160,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_commands_node ON commands(node_id, status, id);
             """
         )
+        migrations = {
+            "enrollment_tokens": {
+                "bound_ip": "TEXT",
+                "bound_fingerprint": "TEXT",
+                "bound_wg_public_key": "TEXT",
+            },
+            "nodes": {
+                "bound_ip": "TEXT",
+                "fingerprint": "TEXT",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 @app.on_event("startup")
@@ -266,7 +287,12 @@ def representative_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "SELECT * FROM nodes WHERE representative_id=? ORDER BY last_seen_at DESC",
             (rep["id"],),
         ).fetchall()
-        connected = [n for n in nodes if n["last_seen_at"] and now - int(n["last_seen_at"]) <= ONLINE_WINDOW]
+        connected = [
+            n for n in nodes
+            if n["last_seen_at"]
+            and now - int(n["last_seen_at"]) <= ONLINE_WINDOW
+            and str(n["status"] or "") not in {"revoked", "ip_mismatch", "identity_mismatch"}
+        ]
         active, reason = license_state(rep)
         result.append({
             **dict(rep),
@@ -279,6 +305,7 @@ def representative_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "panel_online": bool(connected),
             "connected_panels": len(connected),
             "panel_count": len(nodes),
+            "bound_ip": (connected[0]["bound_ip"] if connected else (nodes[0]["bound_ip"] if nodes else None)),
         })
     return result
 
@@ -309,15 +336,93 @@ def issue_representative_token(
     return rep_id, raw_token
 
 
-def authenticate_node(node_id: str | None, authorization: str | None) -> sqlite3.Row:
+def rotate_representative_token(representative_id: str, token_ttl_seconds: int = 86400) -> str:
+    raw_token = "GANJ-" + secrets.token_urlsafe(28)
+    now = now_ts()
+    peers: list[tuple[str, str]] = []
+    with db() as conn:
+        rep = conn.execute("SELECT * FROM representatives WHERE id=?", (representative_id,)).fetchone()
+        if not rep:
+            raise HTTPException(404, "representative_not_found")
+        if str(rep["status"]) != "active":
+            raise HTTPException(409, "representative_not_active")
+        nodes = conn.execute(
+            "SELECT * FROM nodes WHERE representative_id=? AND status != 'revoked'",
+            (representative_id,),
+        ).fetchall()
+        for node in nodes:
+            conn.execute("UPDATE nodes SET status='revoked',updated_at=? WHERE id=?", (now, node["id"]))
+            peers.append((str(node["wg_public_key"]), str(node["wg_ip"])))
+        conn.execute(
+            "UPDATE enrollment_tokens SET status='revoked' WHERE representative_id=? AND status IN ('pending','used')",
+            (representative_id,),
+        )
+        conn.execute(
+            """INSERT INTO enrollment_tokens
+               (id,representative_id,token_hash,status,issued_at,expires_at)
+               VALUES(?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()), representative_id, hash_secret(raw_token),
+                "pending", now, now + max(300, int(token_ttl_seconds)),
+            ),
+        )
+        add_event(conn, "representative_token_rotated", representative_id, data={"revoked_panels": len(nodes)})
+    for public_key, wg_ip in peers:
+        try:
+            wg_peer_apply(public_key, wg_ip, False)
+        except Exception:
+            pass
+    return raw_token
+
+
+def request_public_ip(request: Request) -> str:
+    peer = str(request.client.host if request.client else "").strip()
+    raw = peer
+    try:
+        peer_ip = __import__("ipaddress").ip_address(peer)
+        if peer_ip.is_loopback:
+            raw = str(request.headers.get("x-real-ip") or peer).strip()
+    except ValueError:
+        pass
+    try:
+        return str(__import__("ipaddress").ip_address(raw))
+    except ValueError:
+        raise HTTPException(400, "invalid_client_ip")
+
+
+def authenticate_node(
+    node_id: str | None,
+    authorization: str | None,
+    request: Request,
+    fingerprint: str | None = None,
+) -> sqlite3.Row:
     if not node_id or not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "node_auth_required")
     secret = authorization.split(" ", 1)[1].strip()
+    client_ip = request_public_ip(request)
+    disable_peer: tuple[str, str] | None = None
     with db() as conn:
         row = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
-    if not row or not secure_eq(str(row["secret_hash"]), hash_secret(secret)):
-        raise HTTPException(401, "invalid_node_credentials")
-    return row
+        if not row or not secure_eq(str(row["secret_hash"]), hash_secret(secret)):
+            raise HTTPException(401, "invalid_node_credentials")
+        if str(row["status"] or "") in {"revoked", "ip_mismatch", "identity_mismatch"}:
+            raise HTTPException(403, "node_binding_locked")
+        reason = None
+        if row["bound_ip"] and str(row["bound_ip"]) != client_ip:
+            reason = "ip_mismatch"
+        elif fingerprint and row["fingerprint"] and str(row["fingerprint"]) != str(fingerprint):
+            reason = "identity_mismatch"
+        if reason:
+            conn.execute("UPDATE nodes SET status=?,updated_at=? WHERE id=?", (reason, now_ts(), node_id))
+            disable_peer = (str(row["wg_public_key"]), str(row["wg_ip"]))
+        else:
+            return row
+    if disable_peer:
+        try:
+            wg_peer_apply(disable_peer[0], disable_peer[1], False)
+        except Exception:
+            pass
+    raise HTTPException(403, "node_binding_changed_rotate_token_required")
 
 
 def record_usage(conn: sqlite3.Connection, node: sqlite3.Row, wireguard: dict[str, Any]) -> int:
@@ -368,7 +473,8 @@ def status_badge(value: str) -> str:
     labels = {
         "active": "فعال", "pending": "در انتظار استفاده", "used": "استفاده‌شده",
         "expired": "منقضی", "revoked": "لغوشده", "quota_exceeded": "اتمام حجم",
-        "not_started": "شروع‌نشده", "none": "بدون توکن",
+        "ip_mismatch": "IP تغییر کرده — قفل", "identity_mismatch": "سرور تغییر کرده — قفل",
+        "offline": "آفلاین", "not_started": "شروع‌نشده", "none": "بدون توکن",
     }
     cls = "ok" if value in {"active", "used"} else ("warn" if value in {"pending", "not_started"} else "bad")
     return f'<span class="badge {cls}">{esc(labels.get(value, value))}</span>'
@@ -441,6 +547,8 @@ def representatives_table(rows: list[dict[str, Any]]) -> str:
         used = int(x["traffic_used_bytes"] or 0)
         pct = 0 if not limit else min(100, int(used * 100 / max(1, int(limit))))
         panel = '<span class="badge ok">آنلاین</span>' if x["panel_online"] else '<span class="badge bad">آفلاین</span>'
+        if x.get("bound_ip"):
+            panel += f'<div class="muted">IP قفل‌شده: {esc(x["bound_ip"])}</div>'
         trs.append(f"""<tr>
 <td><a href="/admin/representatives/{esc(x['id'])}"><b>{esc(x['name'])}</b></a><div class="muted">{x['panel_count']} پنل ثبت‌شده</div></td>
 <td>{panel}</td><td>{status_badge(x['token_status'])}<div class="muted">{fmt_date(x['token_expires_at'])}</div></td>
@@ -497,12 +605,16 @@ def admin_representative_detail(representative_id: str, ganj_admin: str | None =
     active, reason = license_state(rep)
     used = int(rep["traffic_used_bytes"] or 0)
     token_rows = "".join(
-        f"<tr><td>{status_badge(token_effective_status(t))}</td><td>{fmt_date(t['issued_at'])}</td><td>{fmt_date(t['expires_at'])}</td><td>{fmt_date(t['used_at']) if t['used_at'] else '—'}</td></tr>"
+        f"<tr><td>{status_badge(token_effective_status(t))}</td><td>{fmt_date(t['issued_at'])}</td>"
+        f"<td>{fmt_date(t['expires_at'])}</td><td>{fmt_date(t['used_at']) if t['used_at'] else '—'}</td>"
+        f"<td>{esc(t['bound_ip'] or '—')}</td></tr>"
         for t in tokens
     )
     now = now_ts()
     node_rows = "".join(
-        f"<tr><td>{esc(n['name'])}</td><td>{status_badge('active' if n['last_seen_at'] and now-int(n['last_seen_at'])<=ONLINE_WINDOW else 'expired')}</td><td>{fmt_date(n['last_seen_at']) if n['last_seen_at'] else '—'}</td><td>{esc(n['agent_version'] or '—')}</td></tr>"
+        f"<tr><td>{esc(n['name'])}</td><td>{status_badge(str(n['status'] or 'offline'))}</td>"
+        f"<td>{esc(n['bound_ip'] or '—')}</td><td>{fmt_date(n['last_seen_at']) if n['last_seen_at'] else '—'}</td>"
+        f"<td>{esc(n['agent_version'] or '—')}</td></tr>"
         for n in nodes
     )
     body = f"""<h1>{esc(rep['name'])}</h1><div class="grid">
@@ -515,10 +627,30 @@ def admin_representative_detail(representative_id: str, ganj_admin: str | None =
 <label>محدودیت حجم (GB، -1=نامحدود)<input name="traffic_limit_gb" type="number" step="0.1" value="{(-1 if rep['traffic_limit_bytes'] is None else round(int(rep['traffic_limit_bytes'])/(1024**3),2))}"></label>
 <label>انقضا (خالی=نامحدود)<input name="expires_at" type="datetime-local"></label>
 <label>وضعیت<select name="status" style="background:#0b111a;color:#fff;padding:10px;border:1px solid #26364c;border-radius:10px"><option value="active">فعال</option><option value="revoked">لغوشده</option></select></label>
-<button>ذخیره</button></form></div>
-<div class="card" style="margin-top:16px"><h3>توکن‌ها</h3><table><tr><th>وضعیت</th><th>صدور</th><th>انقضا</th><th>استفاده</th></tr>{token_rows}</table></div>
-<div class="card" style="margin-top:16px"><h3>پنل‌های متصل</h3><table><tr><th>نام</th><th>وضعیت</th><th>آخرین ارتباط</th><th>Agent</th></tr>{node_rows}</table></div>"""
+<button>ذخیره</button></form>
+<form method="post" action="/admin/representatives/{esc(representative_id)}/rotate" style="margin-top:12px"
+ onsubmit="return confirm('پنل فعلی revoke شود، توکن قبلی بسوزد و توکن جدید صادر شود؟')">
+<button type="submit">تعویض سرور / IP و صدور توکن جدید</button></form></div>
+<div class="card" style="margin-top:16px"><h3>توکن‌ها</h3><table><tr><th>وضعیت</th><th>صدور</th><th>انقضا</th><th>استفاده</th><th>IP قفل‌شده</th></tr>{token_rows}</table></div>
+<div class="card" style="margin-top:16px"><h3>پنل‌های متصل</h3><table><tr><th>نام</th><th>وضعیت</th><th>IP قفل‌شده</th><th>آخرین ارتباط</th><th>Agent</th></tr>{node_rows}</table></div>"""
     return layout(f"نماینده {rep['name']}", body)
+
+
+@app.post("/admin/representatives/{representative_id}/rotate", response_class=HTMLResponse)
+def admin_representative_rotate(
+    representative_id: str,
+    ganj_admin: str | None = Cookie(default=None),
+):
+    require_admin(ganj_admin)
+    raw = rotate_representative_token(representative_id)
+    with db() as conn:
+        rep = conn.execute("SELECT name FROM representatives WHERE id=?", (representative_id,)).fetchone()
+    body = f"""<h1>توکن جایگزین صادر شد</h1><div class="card">
+<p>نماینده: <b>{esc(rep['name'] if rep else representative_id)}</b></p>
+<div class="notice">{esc(raw)}</div>
+<p class="muted">پنل قبلی revoke شد و توکن‌های قبلی سوخته‌اند. این توکن فقط همین بار نمایش داده می‌شود.</p>
+<a class="nav" href="/admin/representatives/{esc(representative_id)}">بازگشت به نماینده</a></div>"""
+    return layout("توکن جایگزین", body)
 
 
 @app.post("/admin/representatives/{representative_id}/update")
@@ -553,6 +685,10 @@ async def enroll(request: Request):
         raise HTTPException(400, "token_required")
     token_hash = hash_secret(raw_token)
     now = now_ts()
+    client_ip = request_public_ip(request)
+    fingerprint = str(body.get("fingerprint") or "").strip()
+    if len(fingerprint) < 32:
+        raise HTTPException(400, "fingerprint_required")
     with db() as conn:
         tok = conn.execute("SELECT * FROM enrollment_tokens WHERE token_hash=?", (token_hash,)).fetchone()
         if not tok:
@@ -576,18 +712,21 @@ async def enroll(request: Request):
         if not wg_public_key:
             raise HTTPException(400, "wg_public_key_required")
         conn.execute(
-            """INSERT INTO nodes(id,representative_id,name,secret_hash,wg_public_key,wg_ip,status,agent_version,panel_json,last_seen_at,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO nodes(id,representative_id,name,bound_ip,fingerprint,secret_hash,wg_public_key,wg_ip,status,agent_version,panel_json,last_seen_at,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 node_id, rep["id"], str(body.get("node_name") or body.get("hostname") or "Representative panel"),
+                client_ip, fingerprint,
                 hash_secret(node_secret_raw), wg_public_key, wg_ip, "online",
                 str(body.get("agent_version") or ""), json.dumps(body.get("panel") or {}, ensure_ascii=False),
                 now, now, now,
             ),
         )
         conn.execute(
-            "UPDATE enrollment_tokens SET status='used',used_at=?,node_id=? WHERE id=?",
-            (now, node_id, tok["id"]),
+            """UPDATE enrollment_tokens
+               SET status='used',used_at=?,node_id=?,bound_ip=?,bound_fingerprint=?,bound_wg_public_key=?
+               WHERE id=?""",
+            (now, node_id, client_ip, fingerprint, wg_public_key, tok["id"]),
         )
         add_event(conn, "panel_enrolled", rep["id"], node_id)
         try:
@@ -611,8 +750,8 @@ async def enroll(request: Request):
 
 @app.post("/v1/heartbeat")
 async def heartbeat(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
     body = await request.json()
+    node = authenticate_node(x_ganj_node_id, authorization, request, str(body.get("fingerprint") or "") or None)
     now = now_ts()
     with db() as conn:
         current = conn.execute("SELECT * FROM nodes WHERE id=?", (node["id"],)).fetchone()
@@ -636,8 +775,8 @@ async def heartbeat(request: Request, authorization: str | None = Header(default
 
 
 @app.get("/v1/desired")
-def desired(authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+def desired(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     with db() as conn:
         rep = conn.execute("SELECT * FROM representatives WHERE id=?", (node["representative_id"],)).fetchone()
     if not rep:
@@ -666,7 +805,7 @@ def desired(authorization: str | None = Header(default=None), x_ganj_node_id: st
 
 @app.post("/v1/report")
 async def report(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     body = await request.json()
     with db() as conn:
         add_event(conn, "agent_report", node["representative_id"], node["id"], body)
@@ -674,8 +813,8 @@ async def report(request: Request, authorization: str | None = Header(default=No
 
 
 @app.get("/v1/commands/next")
-def next_command(authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+def next_command(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     with db() as conn:
         row = conn.execute(
             "SELECT * FROM commands WHERE node_id=? AND status='pending' ORDER BY id LIMIT 1",
@@ -689,7 +828,7 @@ def next_command(authorization: str | None = Header(default=None), x_ganj_node_i
 
 @app.post("/v1/commands/{command_id}/result")
 async def command_result(command_id: int, request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     body = await request.json()
     with db() as conn:
         row = conn.execute("SELECT * FROM commands WHERE id=? AND node_id=?", (command_id, node["id"])).fetchone()
