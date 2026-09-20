@@ -19,6 +19,61 @@ def without_live_ports(fn):
     return wrapped
 
 
+class WireGuardSelfHealTests(unittest.TestCase):
+    def test_parse_peer_config_and_endpoint(self):
+        peer = ganj_vps._parse_wireguard_peer_config(
+            "[Interface]\nPrivateKey = local\n\n"
+            "[Peer]\nPublicKey = server-key\n"
+            "Endpoint = gateway.example.test:51820\n"
+        )
+        self.assertEqual(peer["public_key"], "server-key")
+        self.assertEqual(peer["endpoint"], "gateway.example.test:51820")
+        self.assertEqual(
+            ganj_vps._split_wireguard_endpoint(peer["endpoint"]),
+            ("gateway.example.test", "51820"),
+        )
+        self.assertEqual(
+            ganj_vps._split_wireguard_endpoint("[2001:db8::1]:51820"),
+            ("2001:db8::1", "51820"),
+        )
+
+    def test_endpoint_refresh_updates_stale_dns_target(self):
+        old_conf = ganj_vps.WG_CONF
+        old_which = ganj_vps.shutil.which
+        old_host = ganj_vps.socket.gethostbyname
+        old_run = ganj_vps.run
+        tmp = Path(tempfile.mkdtemp(prefix="ganj-vps-wg-test-")) / "ganj-vps.conf"
+        tmp.write_text(
+            "[Interface]\nPrivateKey = local\n\n"
+            "[Peer]\nPublicKey = server-key\n"
+            "Endpoint = gateway.example.test:51820\n",
+            encoding="utf-8",
+        )
+        calls = []
+        def fake_run(cmd, timeout=20, check=False):
+            calls.append(cmd)
+            class Result:
+                returncode = 0
+                stdout = "server-key 198.51.100.10:51820\n" if cmd[:4] == ["wg", "show", "ganj-vps", "endpoints"] else ""
+                stderr = ""
+            return Result()
+        try:
+            ganj_vps.WG_CONF = tmp
+            ganj_vps.shutil.which = lambda name: "/usr/bin/wg" if name == "wg" else old_which(name)
+            ganj_vps.socket.gethostbyname = lambda host: "198.51.100.20"
+            ganj_vps.run = fake_run
+            self.assertTrue(ganj_vps.refresh_wireguard_endpoint_dns())
+            self.assertIn(
+                ["wg", "set", "ganj-vps", "peer", "server-key", "endpoint", "gateway.example.test:51820"],
+                calls,
+            )
+        finally:
+            ganj_vps.WG_CONF = old_conf
+            ganj_vps.shutil.which = old_which
+            ganj_vps.socket.gethostbyname = old_host
+            ganj_vps.run = old_run
+
+
 class LocationTests(unittest.TestCase):
     def test_top_locations_are_unique_and_curated(self):
         self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 30)
