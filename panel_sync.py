@@ -277,9 +277,30 @@ class SanaeiAdapter:
         return data.get("obj") or []
 
     def add_inbound(self, payload: dict[str, Any]) -> None:
-        r = self.s.post(f"{self.base}/panel/api/inbounds/add", json=payload, timeout=15)
+        url = f"{self.base}/panel/api/inbounds/add"
+        r = self.s.post(url, json=payload, timeout=15)
+        ok = False
+        try:
+            ok = r.status_code == 200 and bool(r.json().get("success"))
+        except Exception:
+            ok = False
+        if ok:
+            return
+
+        form: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in {"settings", "streamSettings", "sniffing", "allocate"} and not isinstance(value, str):
+                form[key] = json.dumps(value, separators=(",", ":"))
+            elif isinstance(value, bool):
+                form[key] = "true" if value else "false"
+            else:
+                form[key] = value
+        r = self.s.post(url, data=form, timeout=15)
         r.raise_for_status()
-        data = r.json()
+        try:
+            data = r.json()
+        except Exception as exc:
+            raise RuntimeError("sanaei_add_inbound_invalid_response") from exc
         if not data.get("success"):
             raise RuntimeError("sanaei_add_inbound_failed")
 
@@ -356,7 +377,7 @@ class SanaeiAdapter:
 
         for item, loc in zip(created, locs):
             row = next((x for x in now_rows if x.get("remark") == f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"), None)
-            inbound_tag = str((row or {}).get("tag") or f"inbound-{item['local_port']}")
+            inbound_tag = str((row or {}).get("tag") or (f"inbound-{row.get('id')}" if row and row.get("id") else f"inbound-{item['local_port']}"))
             item["inbound_tag"] = inbound_tag
             out_tag = GANJ_OUT_PREFIX + loc["country_code"].lower()
             outbounds.append({
