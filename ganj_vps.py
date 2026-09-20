@@ -21,7 +21,7 @@ from typing import Any
 
 import requests
 
-from panel_sync import adapter_from_profile, detect_sanaei_local
+from panel_sync import LOCATION_CATALOG, adapter_from_profile, detect_sanaei_local
 
 APP_NAME = "GANJ VPS"
 APP_VERSION = "0.3.0"
@@ -41,11 +41,7 @@ DEFAULT_CENTRAL = "https://turkey.ufo-tuning.ir/ganj-agent"
 HEARTBEAT_INTERVAL = 15
 HTTP_TIMEOUT = 15
 
-TOP_LOCATIONS = [
-    "DE","NL","FR","GB","TR","FI","SE","CH","AT","BE",
-    "PL","IT","ES","RO","BG","CZ","NO","DK","IE","LT",
-    "LV","EE","US","CA","AE","RU","SG","JP","KR","AU",
-]
+TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
 def run(cmd: list[str], timeout: int = 20, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=check)
@@ -312,11 +308,12 @@ def configure_panel(force_manual: bool = False) -> int:
             profile["host_port_mode"] = {"1": "template", "2": "inbound", "3": "none"}.get(hp, "template")
 
     print("\nLocal inbound port allocation:")
-    print("  Fixed GANJ country mapping will be used.")
-    print("  Example: FR :1443 · NL :2443 · GB :3443 · DE :4443 · US :9443")
+    print("  Fixed GANJ location catalog will be used.")
+    print("  Countries are assigned sequentially from :6000 through :6029.")
+    print("  :6030 stays reserved for one future catalog location.")
     print("  Every requested port is conflict-checked before apply.")
-    profile["base_port"] = 1443
-    profile["port_mode"] = "fixed-country-map"
+    profile["base_port"] = 6000
+    profile["port_mode"] = "fixed-location-range-6000-6030"
 
     # Verify again using the final profile before persisting credentials.
     adapter = adapter_from_profile(profile)
@@ -372,13 +369,16 @@ def locations_plan() -> int:
     plan = adapter.plan_locations(central_locations())
     items = plan.get("items") or []
     print("\nGANJ location plan")
-    print("  CC  Local Port  Gateway Port  Inbound")
-    print("  --  ----------  ------------  ------------------------")
+    print("  CC  Local Port  Gateway Port  State        Inbound")
+    print("  --  ----------  ------------  -----------  ------------------------")
     for item in items:
+        gateway_text = str(item.get("gateway_port") or "—")
+        state = "ready" if item.get("available") else "placeholder"
         print(
             f"  {str(item.get('country_code') or ''):<2}  "
             f"{str(item.get('local_port') or ''):<10}  "
-            f"{str(item.get('gateway_port') or ''):<12}  "
+            f"{gateway_text:<12}  "
+            f"{state:<11}  "
             f"{str(item.get('inbound_tag') or item.get('template_inbound_id') or '')[:24]}"
         )
     print(f"\nTotal: {len(items)} · no changes applied")
@@ -390,13 +390,45 @@ def central_locations() -> list[dict[str, Any]]:
     license_info = data.get("license") or {}
     if license_info and not license_info.get("active", False):
         raise RuntimeError(str(license_info.get("reason") or "license_inactive"))
-    locations = ((data.get("gateway") or {}).get("locations") or [])
-    return [x for x in locations if x.get("enabled") and str(x.get("country_code") or "") in TOP_LOCATIONS]
+
+    published_rows = ((data.get("gateway") or {}).get("locations") or [])
+    published: dict[str, dict[str, Any]] = {}
+    for row in published_rows:
+        code = str(row.get("country_code") or "").upper()
+        if code in LOCATION_CATALOG:
+            published[code] = dict(row)
+
+    # Always return the complete installer catalog. A location without a
+    # published gateway config is still materialized as Host/Inbound and is
+    # routed to blackhole until a later sync makes it available.
+    rows: list[dict[str, Any]] = []
+    for code, meta in LOCATION_CATALOG.items():
+        source = published.get(code)
+        raw = dict(source or {})
+        port = int(raw.get("port") or 0)
+        available = bool(source is not None and raw.get("enabled", True) and port > 0)
+        raw.update({
+            "country_code": code,
+            "name": meta["country"],
+            "city": meta["city"],
+            "flag": meta["flag"],
+            "port": port,
+            "enabled": available,
+            "available": available,
+        })
+        rows.append(raw)
+    return rows
 
 def locations_list() -> int:
     rows = central_locations()
     for x in rows:
-        print(f"{x.get('country_code','--'):>2}  :{x.get('port','—'):<5}  {x.get('name','')}")
+        port_text = str(x.get("port") or "—")
+        status = "ready" if x.get("available") else "placeholder"
+        city = str(x.get("city") or "")
+        print(
+            f"{x.get('country_code','--'):>2}  :{port_text:<5}  "
+            f"{x.get('name','')} — {city}  [{status}]"
+        )
     print(f"\n{len(rows)} locations")
     return 0
 
@@ -415,14 +447,16 @@ def locations_install(assume_yes: bool = False) -> int:
         raise RuntimeError("location_plan_incomplete")
 
     print("\nGANJ VPS · Install Plan")
-    print("  CC  Local Port  Gateway Port  Host")
-    print("  --  ----------  ------------  --------")
+    print("  CC  Local Port  Gateway Port  State        Host")
+    print("  --  ----------  ------------  -----------  --------")
     for item in items:
         host_text = "clone" if item.get("host_clone") else ("—" if profile.get("type") == "pasarguard" else "n/a")
+        gateway_text = str(item.get("gateway_port") or "—")
+        state = "ready" if item.get("available") else "placeholder"
         print(
             f"  {str(item.get('country_code') or ''):<2}  "
             f"{str(item.get('local_port') or ''):<10}  "
-            f"{str(item.get('gateway_port') or ''):<12}  {host_text}"
+            f"{gateway_text:<12}  {state:<11}  {host_text}"
         )
 
     if not assume_yes:
