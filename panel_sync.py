@@ -55,6 +55,53 @@ def _alloc_ports(existing: set[int], count: int, base: int) -> list[int]:
     return result
 
 
+def system_listening_ports() -> set[int]:
+    ports: set[int] = set()
+    try:
+        p = subprocess.run(
+            ["ss", "-H", "-lntu"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in p.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            local = parts[4]
+            m = re.search(r":(\d+)$", local)
+            if m:
+                ports.add(int(m.group(1)))
+    except Exception:
+        pass
+    return ports
+
+
+def choose_port_block(existing: set[int], count: int, preferred_base: int = 20000) -> list[int]:
+    existing = set(existing) | system_listening_ports()
+    starts = [preferred_base, 20000, 21000, 22000, 23000, 24000, 25000, 30000, 31000, 32000]
+    seen: set[int] = set()
+    for start in starts:
+        start = max(1024, int(start))
+        if start in seen:
+            continue
+        seen.add(start)
+        candidate = list(range(start, start + count))
+        if candidate[-1] <= 65000 and not any(p in existing for p in candidate):
+            existing.update(candidate)
+            return candidate
+    return _alloc_ports(existing, count, max(1024, int(preferred_base)))
+
+
+def _protocol_name(row: dict[str, Any]) -> str:
+    return str(row.get("protocol") or row.get("type") or "unknown")
+
+
+def _listen_text(row: dict[str, Any]) -> str:
+    value = row.get("listen")
+    if value in (None, "", "0.0.0.0", "::"):
+        return "*"
+    return str(value)
+
+
 def _strip_runtime_inbound_fields(src: dict[str, Any]) -> dict[str, Any]:
     deny = {
         "id", "up", "down", "total", "expiryTime", "clientStats",
