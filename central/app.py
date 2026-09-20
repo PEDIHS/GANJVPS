@@ -287,7 +287,12 @@ def representative_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "SELECT * FROM nodes WHERE representative_id=? ORDER BY last_seen_at DESC",
             (rep["id"],),
         ).fetchall()
-        connected = [n for n in nodes if n["last_seen_at"] and now - int(n["last_seen_at"]) <= ONLINE_WINDOW]
+        connected = [
+            n for n in nodes
+            if n["last_seen_at"]
+            and now - int(n["last_seen_at"]) <= ONLINE_WINDOW
+            and str(n["status"] or "") not in {"revoked", "ip_mismatch", "identity_mismatch"}
+        ]
         active, reason = license_state(rep)
         result.append({
             **dict(rep),
@@ -300,6 +305,7 @@ def representative_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "panel_online": bool(connected),
             "connected_panels": len(connected),
             "panel_count": len(nodes),
+            "bound_ip": (connected[0]["bound_ip"] if connected else (nodes[0]["bound_ip"] if nodes else None)),
         })
     return result
 
@@ -328,6 +334,45 @@ def issue_representative_token(
         )
         add_event(conn, "representative_created", rep_id, data={"name": name.strip()})
     return rep_id, raw_token
+
+
+def rotate_representative_token(representative_id: str, token_ttl_seconds: int = 86400) -> str:
+    raw_token = "GANJ-" + secrets.token_urlsafe(28)
+    now = now_ts()
+    peers: list[tuple[str, str]] = []
+    with db() as conn:
+        rep = conn.execute("SELECT * FROM representatives WHERE id=?", (representative_id,)).fetchone()
+        if not rep:
+            raise HTTPException(404, "representative_not_found")
+        if str(rep["status"]) != "active":
+            raise HTTPException(409, "representative_not_active")
+        nodes = conn.execute(
+            "SELECT * FROM nodes WHERE representative_id=? AND status != 'revoked'",
+            (representative_id,),
+        ).fetchall()
+        for node in nodes:
+            conn.execute("UPDATE nodes SET status='revoked',updated_at=? WHERE id=?", (now, node["id"]))
+            peers.append((str(node["wg_public_key"]), str(node["wg_ip"])))
+        conn.execute(
+            "UPDATE enrollment_tokens SET status='revoked' WHERE representative_id=? AND status IN ('pending','used')",
+            (representative_id,),
+        )
+        conn.execute(
+            """INSERT INTO enrollment_tokens
+               (id,representative_id,token_hash,status,issued_at,expires_at)
+               VALUES(?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()), representative_id, hash_secret(raw_token),
+                "pending", now, now + max(300, int(token_ttl_seconds)),
+            ),
+        )
+        add_event(conn, "representative_token_rotated", representative_id, data={"revoked_panels": len(nodes)})
+    for public_key, wg_ip in peers:
+        try:
+            wg_peer_apply(public_key, wg_ip, False)
+        except Exception:
+            pass
+    return raw_token
 
 
 def request_public_ip(request: Request) -> str:
@@ -501,6 +546,8 @@ def representatives_table(rows: list[dict[str, Any]]) -> str:
         used = int(x["traffic_used_bytes"] or 0)
         pct = 0 if not limit else min(100, int(used * 100 / max(1, int(limit))))
         panel = '<span class="badge ok">آنلاین</span>' if x["panel_online"] else '<span class="badge bad">آفلاین</span>'
+        if x.get("bound_ip"):
+            panel += f'<div class="muted">IP قفل‌شده: {esc(x["bound_ip"])}</div>'
         trs.append(f"""<tr>
 <td><a href="/admin/representatives/{esc(x['id'])}"><b>{esc(x['name'])}</b></a><div class="muted">{x['panel_count']} پنل ثبت‌شده</div></td>
 <td>{panel}</td><td>{status_badge(x['token_status'])}<div class="muted">{fmt_date(x['token_expires_at'])}</div></td>
@@ -557,12 +604,16 @@ def admin_representative_detail(representative_id: str, ganj_admin: str | None =
     active, reason = license_state(rep)
     used = int(rep["traffic_used_bytes"] or 0)
     token_rows = "".join(
-        f"<tr><td>{status_badge(token_effective_status(t))}</td><td>{fmt_date(t['issued_at'])}</td><td>{fmt_date(t['expires_at'])}</td><td>{fmt_date(t['used_at']) if t['used_at'] else '—'}</td></tr>"
+        f"<tr><td>{status_badge(token_effective_status(t))}</td><td>{fmt_date(t['issued_at'])}</td>"
+        f"<td>{fmt_date(t['expires_at'])}</td><td>{fmt_date(t['used_at']) if t['used_at'] else '—'}</td>"
+        f"<td>{esc(t['bound_ip'] or '—')}</td></tr>"
         for t in tokens
     )
     now = now_ts()
     node_rows = "".join(
-        f"<tr><td>{esc(n['name'])}</td><td>{status_badge('active' if n['last_seen_at'] and now-int(n['last_seen_at'])<=ONLINE_WINDOW else 'expired')}</td><td>{fmt_date(n['last_seen_at']) if n['last_seen_at'] else '—'}</td><td>{esc(n['agent_version'] or '—')}</td></tr>"
+        f"<tr><td>{esc(n['name'])}</td><td>{status_badge(str(n['status'] or 'offline'))}</td>"
+        f"<td>{esc(n['bound_ip'] or '—')}</td><td>{fmt_date(n['last_seen_at']) if n['last_seen_at'] else '—'}</td>"
+        f"<td>{esc(n['agent_version'] or '—')}</td></tr>"
         for n in nodes
     )
     body = f"""<h1>{esc(rep['name'])}</h1><div class="grid">
@@ -575,10 +626,30 @@ def admin_representative_detail(representative_id: str, ganj_admin: str | None =
 <label>محدودیت حجم (GB، -1=نامحدود)<input name="traffic_limit_gb" type="number" step="0.1" value="{(-1 if rep['traffic_limit_bytes'] is None else round(int(rep['traffic_limit_bytes'])/(1024**3),2))}"></label>
 <label>انقضا (خالی=نامحدود)<input name="expires_at" type="datetime-local"></label>
 <label>وضعیت<select name="status" style="background:#0b111a;color:#fff;padding:10px;border:1px solid #26364c;border-radius:10px"><option value="active">فعال</option><option value="revoked">لغوشده</option></select></label>
-<button>ذخیره</button></form></div>
-<div class="card" style="margin-top:16px"><h3>توکن‌ها</h3><table><tr><th>وضعیت</th><th>صدور</th><th>انقضا</th><th>استفاده</th></tr>{token_rows}</table></div>
-<div class="card" style="margin-top:16px"><h3>پنل‌های متصل</h3><table><tr><th>نام</th><th>وضعیت</th><th>آخرین ارتباط</th><th>Agent</th></tr>{node_rows}</table></div>"""
+<button>ذخیره</button></form>
+<form method="post" action="/admin/representatives/{esc(representative_id)}/rotate" style="margin-top:12px"
+ onsubmit="return confirm('پنل فعلی revoke شود، توکن قبلی بسوزد و توکن جدید صادر شود؟')">
+<button type="submit">تعویض سرور / IP و صدور توکن جدید</button></form></div>
+<div class="card" style="margin-top:16px"><h3>توکن‌ها</h3><table><tr><th>وضعیت</th><th>صدور</th><th>انقضا</th><th>استفاده</th><th>IP قفل‌شده</th></tr>{token_rows}</table></div>
+<div class="card" style="margin-top:16px"><h3>پنل‌های متصل</h3><table><tr><th>نام</th><th>وضعیت</th><th>IP قفل‌شده</th><th>آخرین ارتباط</th><th>Agent</th></tr>{node_rows}</table></div>"""
     return layout(f"نماینده {rep['name']}", body)
+
+
+@app.post("/admin/representatives/{representative_id}/rotate", response_class=HTMLResponse)
+def admin_representative_rotate(
+    representative_id: str,
+    ganj_admin: str | None = Cookie(default=None),
+):
+    require_admin(ganj_admin)
+    raw = rotate_representative_token(representative_id)
+    with db() as conn:
+        rep = conn.execute("SELECT name FROM representatives WHERE id=?", (representative_id,)).fetchone()
+    body = f"""<h1>توکن جایگزین صادر شد</h1><div class="card">
+<p>نماینده: <b>{esc(rep['name'] if rep else representative_id)}</b></p>
+<div class="notice">{esc(raw)}</div>
+<p class="muted">پنل قبلی revoke شد و توکن‌های قبلی سوخته‌اند. این توکن فقط همین بار نمایش داده می‌شود.</p>
+<a class="nav" href="/admin/representatives/{esc(representative_id)}">بازگشت به نماینده</a></div>"""
+    return layout("توکن جایگزین", body)
 
 
 @app.post("/admin/representatives/{representative_id}/update")
