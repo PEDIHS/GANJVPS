@@ -264,15 +264,21 @@ def configure_panel(force_manual: bool = False, auto_mode: bool = False) -> int:
 
     kind = ""
     detected = False
-    if auto_mode:
-        configured = load_json(PANEL_SECRET_FILE, {})
-        preferred = str(configured.get("type") or "") if isinstance(configured, dict) else ""
-        selected_panel = next((x for x in found if x.get("type") == preferred), None)
-        if selected_panel is None:
-            selected_panel = found[0]
+    if auto_mode and len(found) == 1:
+        selected_panel = found[0]
         kind = str(selected_panel["type"])
         detected = True
         _ui_ok(f"Detected panel: {selected_panel['name']}")
+    elif auto_mode and len(found) > 1:
+        print(f"\n{_GOLD}{_BOLD}  Panel selection{_RESET}")
+        for i, item in enumerate(found, 1):
+            print(f"  [{i}] {item['name']}")
+        raw = input(_ui_prompt("Select panel")).strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(found):
+            kind = str(found[int(raw) - 1]["type"])
+            detected = True
+        else:
+            raise RuntimeError("invalid_panel_selection")
     elif not force_manual and len(found) == 1:
         if _yes_no(f"Use detected {found[0]['name']}", True):
             kind = str(found[0]["type"])
