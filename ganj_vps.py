@@ -541,6 +541,18 @@ def wg_status() -> dict[str, Any]:
             transfer = s.split(":", 1)[1].strip()
     return {"installed": True, "up": True, "endpoint": endpoint, "handshake": handshake, "transfer": transfer}
 
+def ping_latency_ms(host: str) -> float | None:
+    try:
+        p = run(["ping", "-c", "1", "-W", "2", host], timeout=4)
+        if p.returncode != 0:
+            return None
+        import re
+        m = re.search(r"time[=<]([0-9.]+)\s*ms", p.stdout)
+        return round(float(m.group(1)), 1) if m else None
+    except Exception:
+        return None
+
+
 def gateway_tunnel_ok() -> bool:
     if not wg_status().get("up"):
         return False
@@ -741,29 +753,95 @@ def diagnostics() -> int:
     print(json.dumps(checks, ensure_ascii=False, indent=2))
     return 0
 
-def status() -> int:
+def _status_snapshot() -> dict[str, Any]:
     panel = detect_panel()
     state = load_json(STATE_FILE, {})
     cfg = load_json(CONFIG_FILE, {})
-    print(f"{APP_NAME} {APP_VERSION}")
-    print(f"Node:       {cfg.get('node_id','not enrolled')}")
-    print(f"Panel:      {panel['name']}")
-    print(f"WireGuard:  {'UP' if wg_status().get('up') else 'DOWN'}")
-    print(f"Last sync:  {state.get('last_heartbeat','—')}")
-    desired = state.get("desired") or {}
-    print(f"Revision:   {desired.get('revision','—')}")
-    print(f"Location:   {desired.get('location','automatic')}")
+    wg = wg_status()
+    snap: dict[str, Any] = {
+        "version": APP_VERSION,
+        "node_id": cfg.get("node_id"),
+        "central": cfg.get("central"),
+        "panel": panel,
+        "panel_configured": PANEL_SECRET_FILE.exists(),
+        "wireguard": wg,
+        "gateway_reachable": gateway_tunnel_ok(),
+        "gateway_latency_ms": ping_latency_ms("10.60.0.1") if wg.get("up") else None,
+        "last_sync": state.get("last_heartbeat"),
+        "last_error": state.get("last_error"),
+        "desired": state.get("desired") or {},
+    }
+    if PANEL_SECRET_FILE.exists():
+        try:
+            snap["panel_status"] = adapter_from_profile(panel_profile()).status()
+        except Exception as exc:
+            snap["panel_status"] = {"ok": False, "error": type(exc).__name__}
+    return snap
+
+
+def _human_time(epoch: Any) -> str:
+    try:
+        age = max(0, int(time.time()) - int(epoch))
+    except Exception:
+        return "—"
+    if age < 60:
+        return f"{age}s ago"
+    if age < 3600:
+        return f"{age//60}m ago"
+    return f"{age//3600}h ago"
+
+
+def _print_status_snapshot(snap: dict[str, Any]) -> None:
+    desired = snap.get("desired") or {}
     license_info = desired.get("license") or {}
-    if license_info:
-        print(f"License:    {'ACTIVE' if license_info.get('active') else str(license_info.get('reason') or 'INACTIVE').upper()}")
-        print(f"Expires:    {license_info.get('expires_at') or 'unlimited'}")
-        limit = license_info.get("traffic_limit_bytes")
-        used = int(license_info.get("traffic_used_bytes") or 0)
-        if limit is not None:
-            print(f"Traffic:    {used / (1024**3):.2f} / {int(limit) / (1024**3):.2f} GB")
+    panel = snap.get("panel") or {}
+    ps = snap.get("panel_status") or {}
+    wg = snap.get("wireguard") or {}
+    print("╭──────────────────── GANJ VPS STATUS ────────────────────╮")
+    print(f"  Agent       v{snap.get('version')}  ·  Node {(snap.get('node_id') or 'not enrolled')[:12]}")
+    print(f"  Panel       {panel.get('name','Unknown'):<20} {'configured' if snap.get('panel_configured') else 'not configured'}")
+    if snap.get("panel_configured"):
+        if ps.get("ok"):
+            print(
+                f"  Panel API   ONLINE  · inbounds {ps.get('inbounds',0)} "
+                f"· GANJ {ps.get('managed_inbounds',0)}"
+            )
+            if ps.get("type") == "pasarguard":
+                print(f"  Hosts       {ps.get('hosts',0)} total · {ps.get('managed_hosts',0)} GANJ")
         else:
-            print(f"Traffic:    {used / (1024**3):.2f} GB / unlimited")
-    return 0
+            print(f"  Panel API   OFFLINE · {ps.get('error','unknown')}")
+    print(
+        f"  WireGuard   {'UP' if wg.get('up') else 'DOWN'}  · "
+        f"Gateway {'ONLINE' if snap.get('gateway_reachable') else 'OFFLINE'}"
+        + (f" · {snap.get('gateway_latency_ms')} ms" if snap.get("gateway_latency_ms") is not None else "")
+    )
+    print(f"  Central     {'configured' if snap.get('central') else 'not enrolled'} · last sync {_human_time(snap.get('last_sync'))}")
+    if snap.get("last_error"):
+        print(f"  Last error  {snap.get('last_error')}")
+    if license_info:
+        state = "ACTIVE" if license_info.get("active") else str(license_info.get("reason") or "INACTIVE").upper()
+        print(f"  License     {state} · expires {license_info.get('expires_at') or 'unlimited'}")
+        used = int(license_info.get("traffic_used_bytes") or 0) / (1024**3)
+        limit = license_info.get("traffic_limit_bytes")
+        print(f"  Traffic     {used:.2f} GB / {('∞' if limit is None else f'{int(limit)/(1024**3):.2f} GB')}")
+    locations = ((desired.get("gateway") or {}).get("locations") or [])
+    if locations:
+        print(f"  Locations   {len(locations)} published · desired {desired.get('location') or 'automatic'}")
+    print("╰─────────────────────────────────────────────────────────╯")
+
+
+def status(watch: bool = False) -> int:
+    if not watch:
+        _print_status_snapshot(_status_snapshot())
+        return 0
+    try:
+        while True:
+            os.system("clear")
+            _print_status_snapshot(_status_snapshot())
+            print("\nCtrl+C to return")
+            time.sleep(2)
+    except KeyboardInterrupt:
+        return 0
 
 def update_self() -> int:
     installer = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/install.sh"
