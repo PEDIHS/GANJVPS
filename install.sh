@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="GANJ VPS"
-VERSION="0.1.0"
+VERSION="0.3.0"
 REPO="PEDIHS/GANJVPS"
 INSTALL_DIR="/opt/ganj-vps"
 ETC_DIR="/etc/ganj-vps"
