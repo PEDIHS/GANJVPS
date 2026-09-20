@@ -1342,6 +1342,9 @@ def panel_runtime_status(panel: dict[str, Any]) -> dict[str, Any]:
 
 def heartbeat_payload() -> dict[str, Any]:
     panel = detect_panel()
+    state = load_json(STATE_FILE, {})
+    runtime = light_runtime_metrics()
+    desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
     return {
         "agent_version": APP_VERSION,
         "hostname": socket.gethostname(),
@@ -1350,9 +1353,22 @@ def heartbeat_payload() -> dict[str, Any]:
         "panel": panel,
         "panel_runtime": panel_runtime_status(panel),
         "wireguard": {**wg_status(), "gateway_reachable": gateway_tunnel_ok()},
+        "gateway": {
+            "active": state.get("active_gateway") or {},
+            "candidate_count": len(gateway_candidates(desired)),
+        },
+        "runtime": runtime,
         "capabilities": {
             "wireguard": bool(shutil.which("wg")),
             "wireguard_self_heal": True,
+            "multi_gateway": True,
+            "best_ping_gateway": True,
+            "automatic_failover": True,
+            "live_throughput": True,
+            "live_connections": True,
+            "location_latency": True,
+            "desired_reconcile": True,
+            "auto_update": True,
             "panel_sanaei": panel["type"] == "sanaei",
             "panel_pasarguard": panel["type"] == "pasarguard",
             "locations": TOP_LOCATIONS,
@@ -1409,11 +1425,125 @@ def enroll(central: str, token: str) -> None:
         else:
             print("[!] Enrollment succeeded, but the agent service could not be started automatically.")
 
+
+def reconcile_desired(desired: dict[str, Any], force: bool = False) -> dict[str, Any]:
+    desired = desired if isinstance(desired, dict) else {}
+    license_info = desired.get("license") if isinstance(desired.get("license"), dict) else {}
+    if license_info and not license_info.get("active", False):
+        return {"ok": True, "skipped": "license_inactive"}
+
+    gateway = choose_best_gateway(desired, force=False)
+    result: dict[str, Any] = {
+        "ok": True,
+        "gateway": gateway.get("id") if isinstance(gateway, dict) else None,
+        "locations_changed": False,
+    }
+
+    if not PANEL_SECRET_FILE.exists():
+        result["locations_skipped"] = "panel_not_configured"
+        return result
+    if not gateway_ping_ok():
+        result["locations_skipped"] = "gateway_unreachable"
+        return result
+
+    rows = locations_from_desired(desired)
+    signature = locations_signature(rows)
+    state = load_json(STATE_FILE, {})
+    if not force and state.get("locations_signature") == signature:
+        return result
+
+    adapter = adapter_from_profile(panel_profile())
+    installed = adapter.install_locations(rows)
+    verified = adapter.status()
+    expected = len(rows)
+    if int(verified.get("managed_inbounds") or 0) != expected:
+        raise RuntimeError("desired_reconcile_inbound_verification_failed")
+    profile = panel_profile()
+    if profile.get("type") == "pasarguard" and int(profile.get("template_host_id") or 0):
+        if int(verified.get("managed_hosts") or 0) != expected:
+            raise RuntimeError("desired_reconcile_host_verification_failed")
+
+    state = load_json(STATE_FILE, {})
+    state["locations_signature"] = signature
+    state["last_reconcile"] = int(time.time())
+    state["last_reconcile_revision"] = desired.get("revision")
+    save_json(STATE_FILE, state)
+    result["locations_changed"] = True
+    result["installed"] = len(installed.get("installed") or [])
+    return result
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts = []
+    for piece in str(value or "").strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits or 0))
+    return tuple(parts or [0])
+
+
+def remote_agent_version() -> str | None:
+    try:
+        r = requests.get(REMOTE_AGENT_URL, timeout=10, headers={"Cache-Control": "no-cache"})
+        r.raise_for_status()
+        for line in r.text.splitlines()[:80]:
+            stripped = line.strip()
+            if stripped.startswith("APP_VERSION") and "=" in stripped:
+                value = stripped.split("=", 1)[1].strip().strip("\"").strip("'")
+                return value or None
+    except Exception:
+        return None
+    return None
+
+
+def perform_auto_update() -> bool:
+    installer = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/install.sh"
+    env = os.environ.copy()
+    env["GANJ_SKIP_ENROLL"] = "1"
+    env["GANJ_DEFER_RESTART"] = "1"
+    p = subprocess.run(
+        ["bash", "-c", f"curl -fsSL {installer} | bash"],
+        text=True,
+        env=env,
+        capture_output=True,
+        timeout=240,
+    )
+    if p.returncode != 0:
+        state = load_json(STATE_FILE, {})
+        state["last_auto_update_error"] = (p.stderr or p.stdout or "update_failed")[-500:]
+        state["last_auto_update_at"] = int(time.time())
+        save_json(STATE_FILE, state)
+        return False
+    return True
+
+
+def maybe_auto_update() -> bool:
+    state = load_json(STATE_FILE, {})
+    now = int(time.time())
+    last = int(state.get("last_update_check") or 0)
+    if now - last < AUTO_UPDATE_CHECK_INTERVAL:
+        return False
+    state["last_update_check"] = now
+    save_json(STATE_FILE, state)
+
+    remote = remote_agent_version()
+    if not remote or _version_tuple(remote) <= _version_tuple(APP_VERSION):
+        return False
+    if not perform_auto_update():
+        return False
+
+    python_bin = "/opt/ganj-vps/venv/bin/python"
+    script = "/opt/ganj-vps/ganj_vps.py"
+    if os.path.exists(python_bin) and os.path.exists(script):
+        os.execv(python_bin, [python_bin, script, "agent"])
+    return True
+
+
 def sync_once() -> dict[str, Any]:
     cfg = AgentConfig.load()
     client = CentralClient(cfg)
     hb = client.heartbeat(heartbeat_payload())
     desired = client.desired()
+    reconcile = reconcile_desired(desired)
     state = load_json(STATE_FILE, {})
     state.update({
         "last_heartbeat": int(time.time()),
@@ -1421,7 +1551,7 @@ def sync_once() -> dict[str, Any]:
         "desired": desired,
     })
     save_json(STATE_FILE, state)
-    return {"heartbeat": hb, "desired": desired}
+    return {"heartbeat": hb, "desired": desired, "reconcile": reconcile}
 
 def execute_central_command(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     action = str(action or "").strip().lower()
@@ -1483,16 +1613,19 @@ def agent_loop() -> None:
                 last_wg_repair = now
             hb = client.heartbeat(heartbeat_payload())
             desired = client.desired()
+            reconcile = reconcile_desired(desired)
             state = load_json(STATE_FILE, {})
             state.update({
                 "last_heartbeat": int(time.time()),
                 "desired_revision": desired.get("revision"),
                 "desired": desired,
+                "last_reconcile_result": reconcile,
                 "last_error": None,
                 "failures": 0,
             })
             save_json(STATE_FILE, state)
             process_one_command(client)
+            maybe_auto_update()
             failures = 0
         except Exception as exc:
             failures += 1
