@@ -159,6 +159,9 @@ def panel_status() -> int:
 def central_locations() -> list[dict[str, Any]]:
     cfg = AgentConfig.load()
     data = CentralClient(cfg).desired()
+    license_info = data.get("license") or {}
+    if license_info and not license_info.get("active", False):
+        raise RuntimeError(str(license_info.get("reason") or "license_inactive"))
     locations = ((data.get("gateway") or {}).get("locations") or [])
     return [x for x in locations if x.get("enabled") and str(x.get("country_code") or "") in TOP_LOCATIONS]
 
@@ -546,6 +549,16 @@ def status() -> int:
     desired = state.get("desired") or {}
     print(f"Revision:   {desired.get('revision','—')}")
     print(f"Location:   {desired.get('location','automatic')}")
+    license_info = desired.get("license") or {}
+    if license_info:
+        print(f"License:    {'ACTIVE' if license_info.get('active') else str(license_info.get('reason') or 'INACTIVE').upper()}")
+        print(f"Expires:    {license_info.get('expires_at') or 'unlimited'}")
+        limit = license_info.get("traffic_limit_bytes")
+        used = int(license_info.get("traffic_used_bytes") or 0)
+        if limit is not None:
+            print(f"Traffic:    {used / (1024**3):.2f} / {int(limit) / (1024**3):.2f} GB")
+        else:
+            print(f"Traffic:    {used / (1024**3):.2f} GB / unlimited")
     return 0
 
 def update_self() -> int:
