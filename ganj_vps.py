@@ -21,10 +21,15 @@ from typing import Any
 
 import requests
 
-from panel_sync import LOCATION_CATALOG, adapter_from_profile, detect_sanaei_local
+from panel_sync import (
+    LOCATION_CATALOG,
+    PREFERRED_LOCAL_PORTS,
+    adapter_from_profile,
+    detect_sanaei_local,
+)
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -36,11 +41,19 @@ WG_PUBLIC_FILE = ETC_DIR / "wg.public"
 WG_CONF = Path("/etc/wireguard/ganj-vps.conf")
 PANEL_SECRET_FILE = ETC_DIR / "panel.json"
 STATE_FILE = STATE_DIR / "state.json"
+GATEWAYS_FILE = ETC_DIR / "gateways.json"
 
 DEFAULT_CENTRAL = "https://turkey.ufo-tuning.ir/ganj-agent"
 HEARTBEAT_INTERVAL = 15
 HTTP_TIMEOUT = 15
 WIREGUARD_REPAIR_INTERVAL = 60
+GATEWAY_EVALUATION_INTERVAL = 60
+GATEWAY_SWITCH_COOLDOWN = 300
+GATEWAY_SWITCH_HYSTERESIS_MS = 15.0
+LOCATION_PROBE_INTERVAL = 10
+LOCATION_PROBE_TIMEOUT = 1.2
+AUTO_UPDATE_CHECK_INTERVAL = 3600
+REMOTE_AGENT_URL = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/ganj_vps.py"
 
 TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
