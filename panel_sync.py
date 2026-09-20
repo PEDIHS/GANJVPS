@@ -313,11 +313,15 @@ class PasarGuardAdapter:
             and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
         ]
 
-        existing_ports = {int(x.get("port")) for x in inbounds if x.get("port")}
-        local_ports = _alloc_ports(existing_ports, len(locs), self.base_port)
+        plan = self.plan_locations(locs)
+        planned_ports = {
+            str(x.get("country_code")): int(x.get("local_port"))
+            for x in (plan.get("items") or [])
+        }
 
         created = []
-        for loc, local_port in zip(locs, local_ports):
+        for loc in locs:
+            local_port = planned_ports[loc["country_code"]]
             code = loc["country_code"]
             in_tag = GANJ_IN_PREFIX + code.lower()
             out_tag = GANJ_OUT_PREFIX + code.lower()
@@ -352,7 +356,12 @@ class PasarGuardAdapter:
                 h.pop("id", None)
                 h["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
                 h["inbound_tag"] = item["inbound_tag"]
-                h["port"] = None
+                host_port_mode = str(self.profile.get("host_port_mode") or "template")
+                if host_port_mode == "inbound":
+                    h["port"] = int(item["local_port"])
+                elif host_port_mode == "none":
+                    h["port"] = None
+                # template mode intentionally preserves the selected host's port.
                 self.create_host(h)
 
         return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
@@ -550,13 +559,16 @@ class SanaeiAdapter:
             if str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX) and x.get("id"):
                 self.delete_inbound(int(x["id"]))
 
-        remaining = [x for x in self.list_inbounds() if not str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)]
-        used = {int(x.get("port")) for x in remaining if x.get("port")}
-        ports = _alloc_ports(used, len(locs), self.base_port)
+        plan = self.plan_locations(locs)
+        planned_ports = {
+            str(x.get("country_code")): int(x.get("local_port"))
+            for x in (plan.get("items") or [])
+        }
         created = []
 
         allowed = ["enable","listen","protocol","settings","streamSettings","sniffing","allocate"]
-        for loc, port in zip(locs, ports):
+        for loc in locs:
+            port = planned_ports[loc["country_code"]]
             payload = {k: copy.deepcopy(template[k]) for k in allowed if k in template}
             payload["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
             payload["port"] = port
