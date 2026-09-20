@@ -27,7 +27,7 @@ say "${c_cyan}${c_bold}GANJ VPS${c_reset}  ${c_bold}Secure Node Installer${c_res
 say "${c_yellow}[~] Installing system dependencies...${c_reset}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null
-apt-get install -y ca-certificates curl python3 python3-venv wireguard wireguard-tools iproute2 >/dev/null
+apt-get install -y ca-certificates curl python3 python3-venv wireguard wireguard-tools iproute2 iputils-ping >/dev/null
 
 TMP_DIR="$(mktemp -d)"
 ARCHIVE="$TMP_DIR/ganj-vps.tar.gz"
@@ -79,6 +79,19 @@ if [[ -n "$ENROLL_TOKEN" ]]; then
   if /usr/local/bin/ganj-vps enroll --central "$CENTRAL_URL" --token "$ENROLL_TOKEN"; then
     systemctl enable --now "$SERVICE" >/dev/null
     say "${c_green}[+] Node enrolled and agent started.${c_reset}"
+    if [[ -r /dev/tty ]]; then
+      printf "Configure the detected panel now? [Y/n]: " >/dev/tty
+      IFS= read -r setup_panel </dev/tty || true
+      if [[ ! "${setup_panel:-}" =~ ^[Nn]$ ]]; then
+        if /usr/local/bin/ganj-vps panel-configure </dev/tty >/dev/tty 2>/dev/tty; then
+          printf "Install/sync GANJ locations now? [Y/n]: " >/dev/tty
+          IFS= read -r setup_locations </dev/tty || true
+          if [[ ! "${setup_locations:-}" =~ ^[Nn]$ ]]; then
+            /usr/local/bin/ganj-vps locations-install --yes </dev/tty >/dev/tty 2>/dev/tty || true
+          fi
+        fi
+      fi
+    fi
   else
     say "${c_red}[-] Enrollment failed. The software is installed but the service was not started.${c_reset}"
     say "    Retry with: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
