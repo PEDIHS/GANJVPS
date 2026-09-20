@@ -122,13 +122,20 @@ def _choose_index(prompt: str, rows: list[dict[str, Any]], key: str = "index", d
         raise RuntimeError("no_items_available")
     while True:
         suffix = f" [{default_index}]" if default_index else ""
-        raw = input(f"{prompt}{suffix}: ").strip()
+        raw = input(f"{prompt}{suffix} (M = enter ID/tag manually): ").strip()
         if not raw and default_index:
             raw = str(default_index)
+        if raw.lower() == "m":
+            manual = input("Inbound ID or tag: ").strip()
+            for row in rows:
+                if str(row.get("id") or "") == manual or str(row.get("tag") or "") == manual:
+                    return row
+            print("[-] That ID/tag is not present in the panel inventory.")
+            continue
         try:
             n = int(raw)
         except ValueError:
-            print("[-] Enter a valid list number.")
+            print("[-] Enter a valid list number or M.")
             continue
         for row in rows:
             if int(row.get(key) or 0) == n:
@@ -250,18 +257,23 @@ def configure_panel(force_manual: bool = False) -> int:
             matching = next((x for x in hosts if x.get("inbound_tag") == profile["template_inbound_tag"]), None)
             default_host = int(matching.get("index")) if matching else None
             raw = input(
-                f"Host list number to clone (0 = no host){f' [{default_host}]' if default_host else ''}: "
+                f"Host list number to clone (0 = no host, M = enter Host ID)"
+                f"{f' [{default_host}]' if default_host else ''}: "
             ).strip()
             if not raw and default_host:
                 raw = str(default_host)
             if raw in {"", "0"}:
                 profile["template_host_id"] = 0
             else:
-                try:
-                    idx = int(raw)
-                except ValueError as exc:
-                    raise RuntimeError("invalid_host_selection") from exc
-                host = next((x for x in hosts if int(x.get("index") or 0) == idx), None)
+                if raw.lower() == "m":
+                    manual_id = input("Host ID: ").strip()
+                    host = next((x for x in hosts if str(x.get("id") or "") == manual_id), None)
+                else:
+                    try:
+                        idx = int(raw)
+                    except ValueError as exc:
+                        raise RuntimeError("invalid_host_selection") from exc
+                    host = next((x for x in hosts if int(x.get("index") or 0) == idx), None)
                 if not host:
                     raise RuntimeError("invalid_host_selection")
                 profile["template_host_id"] = int(host.get("id") or 0)
