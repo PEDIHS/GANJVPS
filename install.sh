@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="GANJ VPS"
-VERSION="0.4.0"
+VERSION="0.4.1"
 REPO="PEDIHS/GANJVPS"
 INSTALL_DIR="/opt/ganj-vps"
 ETC_DIR="/etc/ganj-vps"
@@ -11,10 +11,31 @@ RUN_DIR="/run/ganj-vps"
 SERVICE="ganj-vps-agent.service"
 DEFAULT_CENTRAL="https://turkey.ufo-tuning.ir/ganj-agent"
 
-c_reset='\033[0m'; c_bold='\033[1m'; c_cyan='\033[96m'; c_green='\033[92m'; c_yellow='\033[93m'; c_red='\033[91m'
+if [[ -t 1 ]]; then
+  c_reset=$'\033[0m'; c_bold=$'\033[1m'; c_dim=$'\033[2m'
+  c_emerald=$'\033[38;2;16;185;129m'; c_emerald2=$'\033[38;2;52;211;153m'
+  c_gold=$'\033[38;2;245;190;64m'; c_gold2=$'\033[38;2;255;215;96m'
+  c_red=$'\033[38;2;248;113;113m'; c_white=$'\033[38;2;236;253;245m'
+else
+  c_reset=''; c_bold=''; c_dim=''; c_emerald=''; c_emerald2=''; c_gold=''; c_gold2=''; c_red=''; c_white=''
+fi
 
 say(){ printf "%b\n" "$*"; }
-die(){ say "${c_red}[-] $*${c_reset}"; exit 1; }
+ok(){ say "${c_emerald2}  ◆${c_reset} $*"; }
+step(){ say "${c_gold}  ◇${c_reset} $*"; }
+warn(){ say "${c_gold2}  !${c_reset} $*"; }
+die(){ say "${c_red}  ✕${c_reset} $*"; exit 1; }
+rule(){ say "${c_dim}  ─────────────────────────────────────────────────────${c_reset}"; }
+banner(){
+  clear 2>/dev/null || true
+  say
+  say "${c_gold}${c_bold}        ╔══════════════════════════════════════╗${c_reset}"
+  say "${c_gold2}${c_bold}        ║              GANJ VPS                ║${c_reset}"
+  say "${c_emerald}${c_bold}        ║       SECURE NODE INSTALLER          ║${c_reset}"
+  say "${c_emerald2}${c_bold}        ╚══════════════════════════════════════╝${c_reset}"
+  say "       ${c_dim}v${VERSION}${c_reset}  ${c_gold}◆${c_reset}  ${c_dim}Emerald / Gold Edition${c_reset}"
+  rule
+}
 
 cleanup(){ rm -rf "${TMP_DIR:-}" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -23,18 +44,20 @@ trap cleanup EXIT
 
 command -v apt-get >/dev/null 2>&1 || die "Ubuntu/Debian with apt is required."
 
-say "${c_cyan}${c_bold}GANJ VPS${c_reset}  ${c_bold}Secure Node Installer${c_reset}"
-say "${c_yellow}[~] Installing system dependencies...${c_reset}"
+banner
+step "Preparing system dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null
 apt-get install -y ca-certificates curl python3 python3-venv wireguard wireguard-tools iproute2 iputils-ping >/dev/null
+ok "System dependencies ready"
 
 TMP_DIR="$(mktemp -d)"
 ARCHIVE="$TMP_DIR/ganj-vps.tar.gz"
-say "${c_yellow}[~] Downloading official release source...${c_reset}"
-curl -fL --retry 3 --connect-timeout 10 "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$ARCHIVE"
+step "Fetching GANJ VPS ${VERSION}"
+curl -fsSL --retry 3 --connect-timeout 10 "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$ARCHIVE"
 mkdir -p "$TMP_DIR/src"
 tar -xzf "$ARCHIVE" -C "$TMP_DIR/src" --strip-components=1
+ok "Official source downloaded"
 
 if [[ -d "$INSTALL_DIR" ]]; then
   stamp="$(date +%Y%m%d-%H%M%S)"
@@ -64,55 +87,57 @@ CENTRAL_URL="${GANJ_CENTRAL_URL:-$DEFAULT_CENTRAL}"
 ENROLL_TOKEN="${GANJ_ENROLL_TOKEN:-}"
 SKIP_ENROLL="${GANJ_SKIP_ENROLL:-0}"
 DEFER_RESTART="${GANJ_DEFER_RESTART:-0}"
-DEFER_RESTART="${GANJ_DEFER_RESTART:-0}"
 
 if [[ "$SKIP_ENROLL" == "1" ]]; then
   if [[ "$DEFER_RESTART" != "1" ]]; then
     systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
   fi
-  say "${c_green}[+] GANJ VPS files updated.${c_reset}"
+  ok "GANJ VPS files updated"
   exit 0
 fi
 
 if [[ -z "$ENROLL_TOKEN" && -r /dev/tty ]]; then
-  printf "Central URL [%s]: " "$CENTRAL_URL" >/dev/tty
-  IFS= read -r input </dev/tty || true
-  [[ -n "${input:-}" ]] && CENTRAL_URL="$input"
-  printf "One-time enrollment token: " >/dev/tty
+  say
+  say "${c_gold}${c_bold}  Enrollment${c_reset}"
+  rule
+  printf "%b" "${c_emerald}  Enrollment token › ${c_reset}" >/dev/tty
   IFS= read -rs ENROLL_TOKEN </dev/tty || true
   printf "\n" >/dev/tty
 fi
 
 if [[ -n "$ENROLL_TOKEN" ]]; then
-  say "${c_yellow}[~] Enrolling node with GANJ Central...${c_reset}"
+  step "Registering this server with GANJ Control"
   if /usr/local/bin/ganj-vps enroll --central "$CENTRAL_URL" --token "$ENROLL_TOKEN"; then
     systemctl enable --now "$SERVICE" >/dev/null
-    say "${c_green}[+] Node enrolled and agent started.${c_reset}"
+    ok "Server registered and secure agent started"
+
     if [[ -r /dev/tty ]]; then
-      printf "Configure the detected panel now? [Y/n]: " >/dev/tty
-      IFS= read -r setup_panel </dev/tty || true
-      if [[ ! "${setup_panel:-}" =~ ^[Nn]$ ]]; then
-        if /usr/local/bin/ganj-vps panel-configure </dev/tty >/dev/tty 2>/dev/tty; then
-          printf "Install/sync GANJ locations now? [Y/n]: " >/dev/tty
-          IFS= read -r setup_locations </dev/tty || true
-          if [[ ! "${setup_locations:-}" =~ ^[Nn]$ ]]; then
-            /usr/local/bin/ganj-vps locations-install --yes </dev/tty >/dev/tty 2>/dev/tty || true
-          fi
+      step "Connecting to detected panel"
+      if /usr/local/bin/ganj-vps panel-configure --auto </dev/tty >/dev/tty 2>/dev/tty; then
+        ok "Panel connection verified"
+        step "Creating and synchronizing GANJ locations"
+        if /usr/local/bin/ganj-vps locations-install --yes </dev/tty >/dev/tty 2>/dev/tty; then
+          ok "Locations synchronized"
+        else
+          warn "Panel is configured, but location sync needs attention. Run: ganj-vps locations-install"
         fi
+      else
+        warn "Panel setup was not completed. Run: ganj-vps panel-configure"
       fi
     fi
   else
-    say "${c_red}[-] Enrollment failed. The software is installed but the service was not started.${c_reset}"
-    say "    Retry with: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
-    exit 1
+    die "Enrollment failed. Verify the one-time token and try again."
   fi
 else
-  say "${c_yellow}[!] No enrollment token supplied. Installation completed without enrollment.${c_reset}"
-  say "    Run: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
+  warn "No enrollment token supplied; runtime installed without activation."
+  say "  ${c_dim}Run the installer again with a fresh token from the Representatives panel.${c_reset}"
 fi
 
 say
-say "${c_green}[+] GANJ VPS installed successfully.${c_reset}"
-say "    CLI:      ganj-vps"
-say "    Status:   ganj-vps status"
-say "    Diagnose: ganj-vps diagnostics"
+rule
+say "  ${c_emerald2}${c_bold}✓ GANJ VPS ${VERSION} is ready${c_reset}"
+say "  ${c_dim}CLI${c_reset}       ${c_gold}ganj-vps${c_reset}"
+say "  ${c_dim}Live${c_reset}      ganj-vps status --watch"
+say "  ${c_dim}Health${c_reset}    ganj-vps diagnostics"
+rule
+say

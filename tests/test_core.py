@@ -232,6 +232,122 @@ class GatewayManagerTests(unittest.TestCase):
         self.assertEqual(ganj_vps._version_tuple("v1.2.3"), (1, 2, 3))
 
 
+class InstallerUXTests(unittest.TestCase):
+    def test_installer_hides_central_url_and_curl_progress(self):
+        installer = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
+        self.assertNotIn("Central URL [", installer)
+        self.assertIn("curl -fsSL", installer)
+        self.assertIn("panel-configure --auto", installer)
+        self.assertIn("Emerald / Gold Edition", installer)
+
+    def test_pasarguard_auto_connection_hides_url_and_tls_questions(self):
+        old_detect = ganj_vps._detect_pasarguard_local_url
+        old_ask = ganj_vps._ask
+        old_getpass = ganj_vps.getpass.getpass
+        old_yes_no = ganj_vps._yes_no
+        prompts = []
+        try:
+            ganj_vps._detect_pasarguard_local_url = lambda: "http://127.0.0.1:9876"
+            ganj_vps._ask = lambda prompt, default="": prompts.append(prompt) or "pedram"
+            ganj_vps.getpass.getpass = lambda prompt: "secret"
+            ganj_vps._yes_no = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("TLS verification must not be prompted in installer auto mode")
+            )
+            profile = ganj_vps._panel_connection_profile("pasarguard", True, auto_mode=True)
+            self.assertEqual(profile["url"], "http://127.0.0.1:9876")
+            self.assertEqual(profile["username"], "pedram")
+            self.assertEqual(profile["password"], "secret")
+            self.assertFalse(profile["verify_tls"])
+            self.assertFalse(any("URL" in str(x) for x in prompts))
+        finally:
+            ganj_vps._detect_pasarguard_local_url = old_detect
+            ganj_vps._ask = old_ask
+            ganj_vps.getpass.getpass = old_getpass
+            ganj_vps._yes_no = old_yes_no
+
+    def test_pasarguard_auto_mode_keeps_core_inbound_host_manual(self):
+        old_detect_panels = ganj_vps.detect_panels
+        old_connection = ganj_vps._panel_connection_profile
+        old_factory = ganj_vps.adapter_from_profile
+        old_choose = ganj_vps._choose_index
+        old_input = __import__("builtins").input
+        old_panel = ganj_vps.PANEL_SECRET_FILE
+        old_config = ganj_vps.CONFIG_FILE
+        old_secret = ganj_vps.SECRET_FILE
+        tmp = Path(tempfile.mkdtemp(prefix="ganj-installer-ux-"))
+        prompts = []
+        inputs = iter(["1", "2"])
+
+        class FakeAdapter:
+            def __init__(self, profile):
+                self.profile = profile
+
+            def login(self):
+                return None
+
+            def list_cores(self):
+                return [{"index": 1, "id": 7, "name": "Main Core", "type": "xray"}]
+
+            def discover(self):
+                return {
+                    "inbounds": [{
+                        "index": 1, "tag": "manual-template", "port": 443,
+                        "protocol": "vless", "listen": "*",
+                    }],
+                    "hosts": [{
+                        "index": 1, "id": 55, "remark": "Template Host",
+                        "inbound_tag": "manual-template", "port": 443,
+                    }],
+                }
+
+            def status(self):
+                return {
+                    "type": "pasarguard", "inbounds": 1, "hosts": 1,
+                    "managed_inbounds": 0,
+                }
+
+        def choose(prompt, rows, *args, **kwargs):
+            prompts.append(prompt)
+            return rows[0]
+
+        try:
+            ganj_vps.PANEL_SECRET_FILE = tmp / "panel.json"
+            ganj_vps.CONFIG_FILE = tmp / "missing-agent.json"
+            ganj_vps.SECRET_FILE = tmp / "missing-secret"
+            ganj_vps.detect_panels = lambda: [{
+                "type": "pasarguard", "name": "PasarGuard", "version": None, "detected": True,
+            }]
+            ganj_vps._panel_connection_profile = lambda kind, detected, auto_mode=False: {
+                "type": "pasarguard",
+                "url": "http://127.0.0.1:8000",
+                "username": "admin",
+                "password": "secret",
+                "core_id": 1,
+                "verify_tls": False,
+            }
+            ganj_vps.adapter_from_profile = lambda profile: FakeAdapter(profile)
+            ganj_vps._choose_index = choose
+            __import__("builtins").input = lambda prompt="": next(inputs)
+
+            self.assertEqual(ganj_vps.configure_panel(auto_mode=True), 0)
+            saved = ganj_vps.load_json(ganj_vps.PANEL_SECRET_FILE, {})
+            self.assertEqual(saved["core_id"], 7)
+            self.assertEqual(saved["template_inbound_tag"], "manual-template")
+            self.assertEqual(saved["template_host_id"], 55)
+            self.assertEqual(saved["host_port_mode"], "inbound")
+            self.assertIn("Core list number", prompts)
+            self.assertIn("Inbound list number", prompts)
+        finally:
+            ganj_vps.detect_panels = old_detect_panels
+            ganj_vps._panel_connection_profile = old_connection
+            ganj_vps.adapter_from_profile = old_factory
+            ganj_vps._choose_index = old_choose
+            __import__("builtins").input = old_input
+            ganj_vps.PANEL_SECRET_FILE = old_panel
+            ganj_vps.CONFIG_FILE = old_config
+            ganj_vps.SECRET_FILE = old_secret
+
+
 class LocationTests(unittest.TestCase):
     def test_top_locations_are_unique_and_curated(self):
         self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 30)

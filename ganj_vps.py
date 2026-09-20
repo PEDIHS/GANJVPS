@@ -27,10 +27,11 @@ from panel_sync import (
     PREFERRED_LOCAL_PORTS,
     adapter_from_profile,
     detect_sanaei_local,
+    _is_ganj_pasarguard_tag,
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -60,6 +61,38 @@ TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
 _WG_RATE_STATE: dict[str, float | int] = {}
 _LOCATION_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "signature": "", "rows": []}
+
+_TTY = bool(getattr(sys.stdout, "isatty", lambda: False)())
+_RESET = "\033[0m" if _TTY else ""
+_BOLD = "\033[1m" if _TTY else ""
+_DIM = "\033[2m" if _TTY else ""
+_GOLD = "\033[38;2;245;190;64m" if _TTY else ""
+_GOLD2 = "\033[38;2;255;215;96m" if _TTY else ""
+_EMERALD = "\033[38;2;16;185;129m" if _TTY else ""
+_EMERALD2 = "\033[38;2;52;211;153m" if _TTY else ""
+_RED = "\033[38;2;248;113;113m" if _TTY else ""
+
+def _ui_title(title: str, subtitle: str = "") -> None:
+    print(f"{_GOLD}{_BOLD}╭──────────────────────────────────────────────────────╮{_RESET}")
+    print(f"{_GOLD2}{_BOLD}│  ◆ GANJ VPS{_RESET}  {_EMERALD}{title:<40}{_GOLD}│{_RESET}")
+    if subtitle:
+        print(f"{_GOLD}│{_RESET}  {_DIM}{subtitle[:50]:<50}{_RESET}  {_GOLD}│{_RESET}")
+    print(f"{_EMERALD}{_BOLD}╰──────────────────────────────────────────────────────╯{_RESET}")
+
+def _ui_ok(message: str) -> None:
+    print(f"{_EMERALD2}  ◆{_RESET} {message}")
+
+def _ui_step(message: str) -> None:
+    print(f"{_GOLD}  ◇{_RESET} {message}")
+
+def _ui_warn(message: str) -> None:
+    print(f"{_GOLD2}  !{_RESET} {message}")
+
+def _ui_error(message: str) -> None:
+    print(f"{_RED}  ✕{_RESET} {message}")
+
+def _ui_prompt(label: str) -> str:
+    return f"{_EMERALD}{label} › {_RESET}"
 
 def run(cmd: list[str], timeout: int = 20, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=check)
@@ -187,83 +220,99 @@ def _print_hosts(rows: list[dict[str, Any]], selected_tag: str = "") -> None:
         )
 
 
-def _panel_connection_profile(kind: str, detected: bool) -> dict[str, Any]:
+def _panel_connection_profile(kind: str, detected: bool, auto_mode: bool = False) -> dict[str, Any]:
     if kind == "sanaei":
         if detected:
-            auto = detect_sanaei_local()
-            if auto and _yes_no("Use automatically detected local 3x-ui API", True):
-                return dict(auto)
+            local = detect_sanaei_local()
+            if local and (auto_mode or _yes_no("Use automatically detected local 3x-ui API", True)):
+                return dict(local)
         return {
             "type": "sanaei",
-            "url": _ask("3x-ui URL", "http://127.0.0.1:2053"),
-            "username": _ask("Admin username"),
-            "password": getpass.getpass("Admin password: "),
-            "verify_tls": _yes_no("Verify panel TLS certificate", False),
+            "url": "http://127.0.0.1:2053" if auto_mode else _ask("3x-ui URL", "http://127.0.0.1:2053"),
+            "username": _ask(_ui_prompt("Admin username").rstrip()),
+            "password": getpass.getpass(_ui_prompt("Admin password")),
+            "verify_tls": False if auto_mode else _yes_no("Verify panel TLS certificate", False),
         }
 
     if kind == "pasarguard":
+        # PasarGuard is local to the representative server. Its endpoint and
+        # TLS mode are discovered internally and are intentionally not exposed
+        # as installer questions.
         return {
             "type": "pasarguard",
-            "url": _ask("PasarGuard URL", _detect_pasarguard_local_url()),
-            "username": _ask("Admin username"),
-            "password": getpass.getpass("Admin password: "),
+            "url": _detect_pasarguard_local_url(),
+            "username": _ask(_ui_prompt("Admin username").rstrip()),
+            "password": getpass.getpass(_ui_prompt("Admin password")),
             "core_id": 1,
-            "verify_tls": _yes_no("Verify panel TLS certificate", False),
+            "verify_tls": False,
         }
     raise RuntimeError("unsupported_panel")
 
 
-def configure_panel(force_manual: bool = False) -> int:
+def configure_panel(force_manual: bool = False, auto_mode: bool = False) -> int:
     found = detect_panels()
-    print("\nGANJ VPS · Panel Setup")
-    print("────────────────────────────────────────────────────────")
-    if found:
-        for i, item in enumerate(found, 1):
-            ver = f" · {item.get('version')}" if item.get("version") else ""
-            print(f"  [{i}] {item['name']}{ver}  ✓ detected")
-    else:
-        print("  No supported panel was detected automatically.")
+    print()
+    _ui_title("PANEL SETUP", "Auto connection · manual template selection")
+
+    if not found:
+        _ui_error("No supported panel was detected on this server.")
+        raise RuntimeError("supported_panel_not_detected")
+
+    for item in found:
+        ver = f" · {item.get('version')}" if item.get("version") else ""
+        print(f"  {_EMERALD2}◆{_RESET} {item['name']}{ver}  {_DIM}detected{_RESET}")
 
     kind = ""
     detected = False
-    if not force_manual and len(found) == 1:
+    if auto_mode and len(found) == 1:
+        selected_panel = found[0]
+        kind = str(selected_panel["type"])
+        detected = True
+        _ui_ok(f"Detected panel: {selected_panel['name']}")
+    elif auto_mode and len(found) > 1:
+        print(f"\n{_GOLD}{_BOLD}  Panel selection{_RESET}")
+        for i, item in enumerate(found, 1):
+            print(f"  [{i}] {item['name']}")
+        raw = input(_ui_prompt("Select panel")).strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(found):
+            kind = str(found[int(raw) - 1]["type"])
+            detected = True
+        else:
+            raise RuntimeError("invalid_panel_selection")
+    elif not force_manual and len(found) == 1:
         if _yes_no(f"Use detected {found[0]['name']}", True):
             kind = str(found[0]["type"])
             detected = True
     elif not force_manual and len(found) > 1:
         print("  [M] Manual panel connection")
-        raw = input("Select panel: ").strip().lower()
+        raw = input(_ui_prompt("Select panel")).strip().lower()
         if raw.isdigit() and 1 <= int(raw) <= len(found):
             kind = str(found[int(raw) - 1]["type"])
             detected = True
 
     if not kind:
-        print("\nManual panel selection:")
-        print("  [1] Sanaei 3x-ui")
+        print("\n  [1] Sanaei 3x-ui")
         print("  [2] PasarGuard")
-        raw = input("Select panel [1/2]: ").strip()
+        raw = input(_ui_prompt("Select panel [1/2]")).strip()
         kind = "sanaei" if raw == "1" else "pasarguard" if raw == "2" else ""
         if not kind:
             raise RuntimeError("unsupported_panel")
 
-    profile = _panel_connection_profile(kind, detected)
+    # In installer auto mode, only the panel endpoint is automatic. Core,
+    # inbound template, Host template and Host port policy remain explicit
+    # operator choices to prevent cloning the wrong production object.
+    profile = _panel_connection_profile(kind, detected, auto_mode=auto_mode)
     adapter = adapter_from_profile(profile)
 
     if kind == "pasarguard":
-        try:
-            adapter.login()
-            cores = adapter.list_cores()
-        except Exception:
-            cores = []
+        adapter.login()
+        cores = adapter.list_cores()
         if cores:
-            print("\nAvailable PasarGuard cores:")
+            print(f"\n{_GOLD}{_BOLD}  Core selection{_RESET}")
             print("  #   ID    Type       Name")
             print("  --  ----  ---------  ------------------------------")
             for row in cores:
-                print(
-                    f"  {int(row.get('index') or 0):<2}  {int(row.get('id') or 0):<4}  "
-                    f"{str(row.get('type') or '')[:9]:<9}  {str(row.get('name') or '')[:30]}"
-                )
+                print(f"  {int(row.get('index') or 0):<2}  {int(row.get('id') or 0):<4}  {str(row.get('type') or '')[:9]:<9}  {str(row.get('name') or '')[:30]}")
             chosen_core = _choose_index("Core list number", cores)
             profile["core_id"] = int(chosen_core.get("id") or 1)
         else:
@@ -275,13 +324,15 @@ def configure_panel(force_manual: bool = False) -> int:
     _print_inbounds(kind, inbounds)
 
     if kind == "sanaei":
-        print("\nChoose the dedicated template inbound. GANJ VPS will READ and CLONE it; the template itself will never be modified or deleted.")
+        print(f"\n{_GOLD}{_BOLD}  Template inbound{_RESET}")
+        print("  GANJ only reads and clones this inbound; the template itself is not modified.")
         selected = _choose_index("Inbound list number", inbounds)
         profile["template_inbound_id"] = int(selected.get("id") or 0)
         if not profile["template_inbound_id"]:
             raise RuntimeError("invalid_template_inbound")
     else:
-        print("\nChoose the dedicated template inbound tag. GANJ VPS will READ and CLONE it; the template itself will never be modified or deleted.")
+        print(f"\n{_GOLD}{_BOLD}  Template inbound{_RESET}")
+        print("  Choose the dedicated VLESS inbound tag to clone.")
         selected = _choose_index("Inbound list number", inbounds)
         profile["template_inbound_tag"] = str(selected.get("tag") or "")
         if not profile["template_inbound_tag"]:
@@ -292,6 +343,7 @@ def configure_panel(force_manual: bool = False) -> int:
             _print_hosts(hosts, profile["template_inbound_tag"])
             matching = next((x for x in hosts if x.get("inbound_tag") == profile["template_inbound_tag"]), None)
             default_host = int(matching.get("index")) if matching else None
+            print(f"\n{_GOLD}{_BOLD}  Host template{_RESET}")
             raw = input(
                 f"Host list number to clone (0 = no host, M = enter Host ID)"
                 f"{f' [{default_host}]' if default_host else ''}: "
@@ -315,56 +367,40 @@ def configure_panel(force_manual: bool = False) -> int:
                 profile["template_host_id"] = int(host.get("id") or 0)
         else:
             profile["template_host_id"] = 0
-            print("[!] No PasarGuard hosts were found; only core inbounds will be created.")
+            _ui_warn("No PasarGuard Hosts found; only core inbounds will be created.")
 
         if profile["template_host_id"]:
-            print("\nHost port policy:")
-            print("  [1] Keep the template Host port (recommended for reverse proxy / shared :443)")
-            print("  [2] Set each Host port to its generated inbound port")
+            print(f"\n{_GOLD}{_BOLD}  Host port policy{_RESET}")
+            print("  [1] Keep the template Host port")
+            print("  [2] Follow each generated inbound port (6000-series)")
             print("  [3] Leave Host port empty and let PasarGuard resolve it")
-            hp = input("Select [1]: ").strip() or "1"
+            hp = input(_ui_prompt("Select [1]")).strip() or "1"
             profile["host_port_mode"] = {"1": "template", "2": "inbound", "3": "none"}.get(hp, "template")
 
-    print("\nLocal inbound port allocation:")
-    print("  Fixed GANJ location catalog will be used.")
-    print("  Countries are assigned sequentially from :6000 through :6029.")
-    print("  :6030 stays reserved for one future catalog location.")
-    print("  Every requested port is conflict-checked before apply.")
     profile["base_port"] = 6000
     profile["port_mode"] = "fixed-location-range-6000-6030"
 
-    # Verify again using the final profile before persisting credentials.
     adapter = adapter_from_profile(profile)
     verified = adapter.status()
     save_json(PANEL_SECRET_FILE, profile, 0o600)
 
-    print("\n[+] Panel connection verified.")
-    print(f"    Type:       {verified.get('type')}")
-    print(f"    Inbounds:   {verified.get('inbounds', 0)}")
-    print(f"    GANJ:       {verified.get('managed_inbounds', 0)} managed inbound(s)")
+    print()
+    _ui_ok("Panel connection verified")
+    print(f"  {_DIM}Type{_RESET}       {verified.get('type')}")
+    print(f"  {_DIM}Inbounds{_RESET}   {verified.get('inbounds', 0)}")
     if kind == "pasarguard":
-        print(f"    Hosts:      {verified.get('hosts', 0)}")
-        print(f"    Host clone: {profile.get('template_host_id') or 'disabled'}")
-    print(f"    Port mode:  {profile.get('port_mode')}")
+        print(f"  {_DIM}Hosts{_RESET}      {verified.get('hosts', 0)}")
+    print(f"  {_DIM}Ports{_RESET}      6000–6029  ·  6030 reserved")
 
     if CONFIG_FILE.exists() and SECRET_FILE.exists():
         try:
             plan = adapter.plan_locations(central_locations())
             items = plan.get("items") or []
             if items:
-                print("\nInstall preview:")
-                for item in items[:8]:
-                    print(
-                        f"    {item.get('country_code')}  local :{item.get('local_port')} "
-                        f"→ gateway :{item.get('gateway_port')}"
-                    )
-                if len(items) > 8:
-                    print(f"    ... +{len(items)-8} more")
-                print(f"    Total: {len(items)} locations")
+                _ui_step(f"Ready to sync {len(items)} locations")
         except Exception as exc:
-            print(f"[!] Preview unavailable: {type(exc).__name__}")
+            _ui_warn(f"Preview unavailable: {type(exc).__name__}")
     return 0
-
 def panel_status() -> int:
     profile = panel_profile()
     result = adapter_from_profile(profile).status()
@@ -1838,26 +1874,22 @@ def menu() -> int:
     while True:
         os.system("clear")
         panel = detect_panel()
-        print("╭────────────────────────────────────────╮")
-        print("│              GANJ VPS                  │")
-        print("│        Secure Node Controller          │")
-        print("╰────────────────────────────────────────╯")
-        print(f"Panel: {panel['name']}")
+        _ui_title("NODE CONTROLLER", f"v{APP_VERSION} · {panel['name']}")
+        print(f"  {_GOLD}01{_RESET}  Live status               {_DIM}traffic · ping · connections{_RESET}")
+        print(f"  {_GOLD}02{_RESET}  Configure panel           {_DIM}auto detect / verify{_RESET}")
+        print(f"  {_GOLD}03{_RESET}  Panel status              {_DIM}managed objects{_RESET}")
+        print(f"  {_GOLD}04{_RESET}  Sync 30 locations         {_DIM}ports 6000–6029{_RESET}")
+        print(f"  {_GOLD}05{_RESET}  Remove GANJ locations")
+        print(f"  {_GOLD}06{_RESET}  Location catalog")
+        print(f"  {_GOLD}07{_RESET}  Sync with control plane")
+        print(f"  {_GOLD}08{_RESET}  Gateways / Best Ping")
+        print(f"  {_GOLD}09{_RESET}  WireGuard status")
+        print(f"  {_GOLD}10{_RESET}  Diagnostics")
+        print(f"  {_GOLD}11{_RESET}  Update")
+        print(f"  {_RED}12{_RESET}  Uninstall")
+        print(f"  {_DIM}00  Exit{_RESET}")
         print()
-        print("[1] Live Status")
-        print("[2] Configure / verify panel")
-        print("[3] Panel status")
-        print("[4] Install / sync 30 locations")
-        print("[5] Remove GANJ locations")
-        print("[6] Location catalog")
-        print("[7] Sync with central")
-        print("[8] Gateways / Best Ping")
-        print("[9] WireGuard status")
-        print("[10] Diagnostics")
-        print("[11] Update")
-        print("[12] Uninstall")
-        print("[0] Exit")
-        choice = input("> ").strip()
+        choice = input(_ui_prompt("Select")).strip().lstrip("0") or "0"
         try:
             if choice == "1":
                 status(watch=True)
@@ -1875,7 +1907,6 @@ def menu() -> int:
                 print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             elif choice == "8":
                 gateways_list()
-                print("\nUse CLI: ganj-vps gateway-switch best")
             elif choice == "9":
                 print(json.dumps(wg_status(), ensure_ascii=False, indent=2))
             elif choice == "10":
@@ -1886,9 +1917,11 @@ def menu() -> int:
                 return uninstall()
             elif choice == "0":
                 return 0
+            else:
+                _ui_warn("Unknown menu option")
         except Exception as exc:
-            print(f"[-] {type(exc).__name__}: {exc}")
-        input("\nPress Enter...")
+            _ui_error(f"{type(exc).__name__}: {exc}")
+        input(f"\n{_DIM}Press Enter to return to menu...{_RESET}")
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ganj-vps")
@@ -1905,6 +1938,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("uninstall")
     pc = sub.add_parser("panel-configure")
     pc.add_argument("--manual", action="store_true")
+    pc.add_argument("--auto", action="store_true")
     sub.add_parser("panel-detect")
     sub.add_parser("panel-status")
     sub.add_parser("panel-inbounds")
@@ -1951,7 +1985,7 @@ def main() -> int:
             print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             return 0
         if args.cmd == "panel-configure":
-            return configure_panel(bool(args.manual))
+            return configure_panel(bool(args.manual), bool(args.auto))
         if args.cmd == "panel-detect":
             print(json.dumps({"items": detect_panels()}, ensure_ascii=False, indent=2))
             return 0
@@ -1987,7 +2021,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
-        print(f"[-] {type(exc).__name__}: {exc}", file=sys.stderr)
+        _ui_error(f"{type(exc).__name__}: {exc}")
         return 1
 
 if __name__ == "__main__":
