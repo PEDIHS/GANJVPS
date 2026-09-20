@@ -193,7 +193,7 @@ def _panel_connection_profile(kind: str, detected: bool) -> dict[str, Any]:
             "url": _ask("PasarGuard URL", _detect_pasarguard_local_url()),
             "username": _ask("Admin username"),
             "password": getpass.getpass("Admin password: "),
-            "core_id": int(_ask("Core ID", "1")),
+            "core_id": 1,
             "verify_tls": _yes_no("Verify panel TLS certificate", False),
         }
     raise RuntimeError("unsupported_panel")
@@ -234,6 +234,28 @@ def configure_panel(force_manual: bool = False) -> int:
 
     profile = _panel_connection_profile(kind, detected)
     adapter = adapter_from_profile(profile)
+
+    if kind == "pasarguard":
+        try:
+            adapter.login()
+            cores = adapter.list_cores()
+        except Exception:
+            cores = []
+        if cores:
+            print("\nAvailable PasarGuard cores:")
+            print("  #   ID    Type       Name")
+            print("  --  ----  ---------  ------------------------------")
+            for row in cores:
+                print(
+                    f"  {int(row.get('index') or 0):<2}  {int(row.get('id') or 0):<4}  "
+                    f"{str(row.get('type') or '')[:9]:<9}  {str(row.get('name') or '')[:30]}"
+                )
+            chosen_core = _choose_index("Core list number", cores)
+            profile["core_id"] = int(chosen_core.get("id") or 1)
+        else:
+            profile["core_id"] = int(_ask("Core ID", "1"))
+        adapter = adapter_from_profile(profile)
+
     discovery = adapter.discover()
     inbounds = discovery.get("inbounds") or []
     _print_inbounds(kind, inbounds)
