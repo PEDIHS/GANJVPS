@@ -31,7 +31,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.5"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -364,6 +364,12 @@ def configure_panel(force_manual: bool = False, auto_mode: bool = False) -> int:
                     host = next((x for x in hosts if int(x.get("index") or 0) == idx), None)
                 if not host:
                     raise RuntimeError("invalid_host_selection")
+                host_tag = str(host.get("inbound_tag") or "")
+                if host_tag and host_tag != profile["template_inbound_tag"]:
+                    raise RuntimeError(
+                        "selected_host_belongs_to_different_inbound:"
+                        f"{host_tag}"
+                    )
                 profile["template_host_id"] = int(host.get("id") or 0)
         else:
             profile["template_host_id"] = 0
