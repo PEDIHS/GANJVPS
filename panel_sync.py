@@ -358,6 +358,26 @@ class PasarGuardAdapter:
             })
         return out
 
+    def _wait_core_after_restart(self, expected_config: dict[str, Any], timeout: int = 75) -> None:
+        deadline = time.time() + max(10, int(timeout))
+        last_error = ""
+        while time.time() < deadline:
+            try:
+                # A PasarGuard all-in-one restart can replace the panel
+                # container itself, invalidating the old HTTP connection and
+                # bearer token. Re-login and verify the persisted Core.
+                self.login()
+                current = self.get_core()
+                if (current.get("config") or {}) == expected_config:
+                    return
+                last_error = "core_config_mismatch_after_restart"
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}:{exc}"
+            time.sleep(2)
+        raise RuntimeError(
+            f"pasarguard_restart_recovery_timeout:{last_error[:300]}"
+        )
+
     def _put_core(self, core: dict[str, Any], config: dict[str, Any], restart_nodes: bool) -> None:
         body = {
             "name": core.get("name"),
@@ -366,13 +386,25 @@ class PasarGuardAdapter:
             "exclude_inbound_tags": list(core.get("exclude_inbound_tags") or []),
             "fallbacks_inbound_tags": list(core.get("fallbacks_inbound_tags") or []),
         }
-        r = self.s.put(
-            f"{self.base}/api/core/{self.core_id}",
-            params={"restart_nodes": "true" if restart_nodes else "false"},
-            json=body,
-            timeout=45,
-        )
+        try:
+            r = self.s.put(
+                f"{self.base}/api/core/{self.core_id}",
+                params={"restart_nodes": "true" if restart_nodes else "false"},
+                json=body,
+                timeout=45,
+            )
+        except requests.RequestException:
+            if restart_nodes:
+                # Expected on PasarGuard all-in-one: the restart may close the
+                # API socket before an HTTP response is returned.
+                self._wait_core_after_restart(config)
+                return
+            raise
+
         if r.status_code >= 400:
+            if restart_nodes and r.status_code in (502, 503, 504):
+                self._wait_core_after_restart(config)
+                return
             detail = (r.text or "").strip()
             raise RuntimeError(
                 f"pasarguard_core_update_failed_http_{r.status_code}: {detail[:500]}"
