@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP="GANJ VPS"
+VERSION="0.1.0"
+REPO="PEDIHS/GANJVPS"
+INSTALL_DIR="/opt/ganj-vps"
+ETC_DIR="/etc/ganj-vps"
+STATE_DIR="/var/lib/ganj-vps"
+RUN_DIR="/run/ganj-vps"
+SERVICE="ganj-vps-agent.service"
+DEFAULT_CENTRAL="https://turkey.ufo-tuning.ir/ganj-agent"
+
+c_reset='\033[0m'; c_bold='\033[1m'; c_cyan='\033[96m'; c_green='\033[92m'; c_yellow='\033[93m'; c_red='\033[91m'
+
+say(){ printf "%b\n" "$*"; }
+die(){ say "${c_red}[-] $*${c_reset}"; exit 1; }
+
+cleanup(){ rm -rf "${TMP_DIR:-}" 2>/dev/null || true; }
+trap cleanup EXIT
+
+[[ "${EUID}" -eq 0 ]] || die "Run as root."
+
+command -v apt-get >/dev/null 2>&1 || die "Ubuntu/Debian with apt is required."
+
+say "${c_cyan}${c_bold}GANJ VPS${c_reset}  ${c_bold}Secure Node Installer${c_reset}"
+say "${c_yellow}[~] Installing system dependencies...${c_reset}"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y >/dev/null
+apt-get install -y ca-certificates curl python3 python3-venv wireguard wireguard-tools iproute2 >/dev/null
+
+TMP_DIR="$(mktemp -d)"
+ARCHIVE="$TMP_DIR/ganj-vps.tar.gz"
+say "${c_yellow}[~] Downloading official release source...${c_reset}"
+curl -fL --retry 3 --connect-timeout 10 "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$ARCHIVE"
+mkdir -p "$TMP_DIR/src"
+tar -xzf "$ARCHIVE" -C "$TMP_DIR/src" --strip-components=1
+
+if [[ -d "$INSTALL_DIR" ]]; then
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  cp -a "$INSTALL_DIR" "${INSTALL_DIR}.bak-${stamp}"
+fi
+
+mkdir -p "$INSTALL_DIR" "$ETC_DIR" "$STATE_DIR" "$RUN_DIR"
+cp -a "$TMP_DIR/src/." "$INSTALL_DIR/"
+python3 -m venv "$INSTALL_DIR/venv"
+"$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check -q -r "$INSTALL_DIR/requirements.txt"
+
+install -m 0644 "$INSTALL_DIR/systemd/ganj-vps-agent.service" "/etc/systemd/system/$SERVICE"
+cat > /usr/local/bin/ganj-vps <<'EOF'
+#!/usr/bin/env bash
+exec /opt/ganj-vps/venv/bin/python /opt/ganj-vps/ganj_vps.py "$@"
+EOF
+chmod 0755 /usr/local/bin/ganj-vps
+chmod 0700 "$ETC_DIR" "$STATE_DIR"
+systemctl daemon-reload
+
+CENTRAL_URL="${GANJ_CENTRAL_URL:-$DEFAULT_CENTRAL}"
+ENROLL_TOKEN="${GANJ_ENROLL_TOKEN:-}"
+
+if [[ -z "$ENROLL_TOKEN" && -r /dev/tty ]]; then
+  printf "Central URL [%s]: " "$CENTRAL_URL" >/dev/tty
+  IFS= read -r input </dev/tty || true
+  [[ -n "${input:-}" ]] && CENTRAL_URL="$input"
+  printf "One-time enrollment token: " >/dev/tty
+  IFS= read -rs ENROLL_TOKEN </dev/tty || true
+  printf "\n" >/dev/tty
+fi
+
+if [[ -n "$ENROLL_TOKEN" ]]; then
+  say "${c_yellow}[~] Enrolling node with GANJ Central...${c_reset}"
+  if /usr/local/bin/ganj-vps enroll --central "$CENTRAL_URL" --token "$ENROLL_TOKEN"; then
+    systemctl enable --now "$SERVICE" >/dev/null
+    say "${c_green}[+] Node enrolled and agent started.${c_reset}"
+  else
+    say "${c_red}[-] Enrollment failed. The software is installed but the service was not started.${c_reset}"
+    say "    Retry with: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
+    exit 1
+  fi
+else
+  say "${c_yellow}[!] No enrollment token supplied. Installation completed without enrollment.${c_reset}"
+  say "    Run: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
+fi
+
+say
+say "${c_green}[+] GANJ VPS installed successfully.${c_reset}"
+say "    CLI:      ganj-vps"
+say "    Status:   ganj-vps status"
+say "    Diagnose: ganj-vps diagnostics"
