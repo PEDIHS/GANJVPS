@@ -61,3 +61,7 @@ sudo deploy/panel-gateway/sync-wg-firewall.sh
 The script persists UFW rules for TCP/UDP `1080:1238` on `wg0` only. This
 fixes the failure mode where only the original Germany port `1082` was
 allowed and every other location timed out from representative nodes.
+
+## Central runtime stability patch
+
+`ganj-central-runtime-stability-20260920.patch` tracks the live production fixes that prevent Xray restart churn from latency/quality telemetry, keep a selected route through transient `suspect` health until the configured failure threshold, debounce real runtime configuration changes, and use `geoiplookup6` for IPv6 egress classification.
