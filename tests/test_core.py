@@ -321,5 +321,43 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual(len(result["installed"]), 2)
 
 
+class DedicatedTemplateSafetyTests(unittest.TestCase):
+    def test_pasarguard_refuses_ganj_managed_inbound_as_template(self):
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "ganj-de",
+            "template_host_id": 0, "base_port": 20000,
+        })
+        adapter.login = lambda: None
+        adapter.get_core = lambda: {
+            "name": "main", "type": "xray",
+            "config": {
+                "inbounds": [{"tag": "ganj-de", "port": 22000, "protocol": "vless"}],
+                "outbounds": [], "routing": {"rules": []},
+            },
+        }
+        adapter.get_hosts = lambda: []
+        with self.assertRaisesRegex(RuntimeError, "dedicated_non_ganj"):
+            adapter.plan_locations([
+                {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+            ])
+
+    def test_sanaei_refuses_ganj_managed_inbound_as_template(self):
+        adapter = SanaeiAdapter({
+            "url": "http://127.0.0.1:2053",
+            "username": "test", "password": "test",
+            "template_inbound_id": 30, "base_port": 20000,
+        })
+        adapter.login = lambda: None
+        adapter.list_inbounds = lambda: [
+            {"id": 30, "remark": "GANJ DE · Germany", "port": 22100, "protocol": "vless"},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "dedicated_non_ganj"):
+            adapter.plan_locations([
+                {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+            ])
+
+
 if __name__ == "__main__":
     unittest.main()
