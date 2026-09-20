@@ -119,6 +119,38 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual(len(result["installed"]), 2)
 
 
+    def test_repeated_pasarguard_plan_preserves_existing_country_ports(self):
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 0, "base_port": 20000,
+        })
+        adapter.login = lambda: None
+        adapter.get_core = lambda: {
+            "name": "main", "type": "xray",
+            "config": {
+                "inbounds": [
+                    {"tag": "template", "port": 443, "protocol": "vless"},
+                    {"tag": "ganj-de", "port": 22010, "protocol": "vless"},
+                    {"tag": "ganj-nl", "port": 22011, "protocol": "vless"},
+                ],
+                "outbounds": [], "routing": {"rules": []},
+            },
+        }
+        adapter.get_hosts = lambda: []
+        old = panel_sync.system_listening_ports
+        panel_sync.system_listening_ports = lambda: {22010, 22011}
+        try:
+            plan = adapter.plan_locations([
+                {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+                {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
+            ])
+        finally:
+            panel_sync.system_listening_ports = old
+        self.assertEqual([x["local_port"] for x in plan["items"]], [22010, 22011])
+
+
 class SanaeiGenerationTests(unittest.TestCase):
     def test_install_generates_country_inbounds_and_routing(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-xui-test-"))
@@ -154,6 +186,31 @@ class SanaeiGenerationTests(unittest.TestCase):
         tags = {x.get("tag") for x in xray["outbounds"]}
         self.assertIn("ganj-egress-de", tags)
         self.assertIn("ganj-egress-fr", tags)
+
+
+    def test_repeated_sanaei_plan_preserves_existing_country_ports(self):
+        adapter = SanaeiAdapter({
+            "url": "http://127.0.0.1:2053",
+            "username": "test", "password": "test",
+            "template_inbound_id": 9, "base_port": 20000,
+        })
+        adapter.login = lambda: None
+        rows = [
+            {"id": 9, "remark": "template", "port": 443, "protocol": "vless"},
+            {"id": 30, "remark": "GANJ DE · Germany", "port": 22100, "protocol": "vless"},
+            {"id": 31, "remark": "GANJ FR · France", "port": 22101, "protocol": "vless"},
+        ]
+        adapter.list_inbounds = lambda: rows
+        old = panel_sync.system_listening_ports
+        panel_sync.system_listening_ports = lambda: {22100, 22101}
+        try:
+            plan = adapter.plan_locations([
+                {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+                {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
+            ])
+        finally:
+            panel_sync.system_listening_ports = old
+        self.assertEqual([x["local_port"] for x in plan["items"]], [22100, 22101])
 
 
 if __name__ == "__main__":
