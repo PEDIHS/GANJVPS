@@ -327,6 +327,16 @@ class CentralClient:
         r = self.session.post(self.url("/v1/report"), json=payload, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
 
+    def next_command(self) -> dict[str, Any] | None:
+        r = self.session.get(self.url("/v1/commands/next"), timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+        return r.json().get("command")
+
+    def command_result(self, command_id: int, ok: bool, data: dict[str, Any] | None = None, error: str | None = None) -> None:
+        payload = {"ok": bool(ok), "data": data or {}, "error": error}
+        r = self.session.post(self.url(f"/v1/commands/{int(command_id)}/result"), json=payload, timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+
 def wg_status() -> dict[str, Any]:
     if not shutil.which("wg"):
         return {"installed": False, "up": False}
@@ -430,12 +440,71 @@ def sync_once() -> dict[str, Any]:
     save_json(STATE_FILE, state)
     return {"heartbeat": hb, "desired": desired}
 
+def execute_central_command(action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    action = str(action or "").strip().lower()
+    payload = payload if isinstance(payload, dict) else {}
+    if action == "sync":
+        cfg = AgentConfig.load()
+        desired = CentralClient(cfg).desired()
+        return {"revision": desired.get("revision"), "location": desired.get("location")}
+    if action == "panel_status":
+        return adapter_from_profile(panel_profile()).status()
+    if action == "locations_install":
+        if not wg_status().get("up"):
+            raise RuntimeError("wireguard_not_connected")
+        rows = central_locations()
+        result = adapter_from_profile(panel_profile()).install_locations(rows)
+        return {"installed": len(result.get("installed") or []), "locations": [x.get("country_code") for x in result.get("installed") or []]}
+    if action == "locations_remove":
+        result = adapter_from_profile(panel_profile()).remove_locations()
+        return {k: v for k, v in result.items() if k != "backup"}
+    if action == "diagnostics":
+        panel = detect_panel()
+        return {
+            "panel": panel,
+            "panel_runtime": panel_runtime_status(panel),
+            "wireguard": wg_status(),
+            "agent_version": APP_VERSION,
+            "os": os_summary(),
+        }
+    if action == "wg_restart":
+        p = run(["systemctl", "restart", "wg-quick@ganj-vps"], timeout=20)
+        if p.returncode != 0:
+            raise RuntimeError("wireguard_restart_failed")
+        return {"wireguard": wg_status()}
+    raise RuntimeError("unsupported_central_command")
+
+def process_one_command(client: CentralClient) -> bool:
+    command = client.next_command()
+    if not command:
+        return False
+    cid = int(command.get("id"))
+    action = str(command.get("action") or "")
+    try:
+        result = execute_central_command(action, command.get("payload") or {})
+        client.command_result(cid, True, result)
+    except Exception as exc:
+        client.command_result(cid, False, {}, type(exc).__name__[:64])
+    return True
+
 def agent_loop() -> None:
-    AgentConfig.load()
+    cfg = AgentConfig.load()
+    client = CentralClient(cfg)
     failures = 0
     while True:
         try:
-            sync_once()
+            hb = client.heartbeat(heartbeat_payload())
+            desired = client.desired()
+            state = load_json(STATE_FILE, {})
+            state.update({
+                "last_heartbeat": int(time.time()),
+                "desired_revision": desired.get("revision"),
+                "desired": desired,
+                "last_error": None,
+                "failures": 0,
+            })
+            save_json(STATE_FILE, state)
+            process_one_command(client)
             failures = 0
         except Exception as exc:
             failures += 1
