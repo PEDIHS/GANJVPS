@@ -1,0 +1,23 @@
+[Unit]
+Description=GANJ VPS Node Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/ganj-vps
+ExecStart=/opt/ganj-vps/venv/bin/python /opt/ganj-vps/ganj_vps.py agent
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/ganj-vps /var/lib/ganj-vps /run/ganj-vps /etc/wireguard
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
