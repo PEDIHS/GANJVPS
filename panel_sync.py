@@ -500,6 +500,34 @@ class SanaeiAdapter:
         if not data.get("success"):
             raise RuntimeError("sanaei_add_inbound_failed")
 
+    def update_inbound(self, inbound_id: int, payload: dict[str, Any]) -> None:
+        url = f"{self.base}/panel/api/inbounds/update/{int(inbound_id)}"
+        r = self.s.post(url, json=payload, timeout=15)
+        ok = False
+        try:
+            ok = r.status_code == 200 and bool(r.json().get("success"))
+        except Exception:
+            ok = False
+        if ok:
+            return
+
+        form: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in {"settings", "streamSettings", "sniffing", "allocate"} and not isinstance(value, str):
+                form[key] = json.dumps(value, separators=(",", ":"))
+            elif isinstance(value, bool):
+                form[key] = "true" if value else "false"
+            else:
+                form[key] = value
+        r = self.s.post(url, data=form, timeout=15)
+        r.raise_for_status()
+        try:
+            data = r.json()
+        except Exception as exc:
+            raise RuntimeError("sanaei_update_inbound_invalid_response") from exc
+        if not data.get("success"):
+            raise RuntimeError("sanaei_update_inbound_failed")
+
     def delete_inbound(self, inbound_id: int) -> None:
         r = self.s.post(f"{self.base}/panel/api/inbounds/del/{inbound_id}", timeout=15)
         if r.status_code != 200:
@@ -607,59 +635,143 @@ class SanaeiAdapter:
     def install_locations(self, locations: list[dict[str, Any]]) -> dict[str, Any]:
         self.login()
         locs = _location_map(locations)
-        rows = self.list_inbounds()
-        template = next((x for x in rows if int(x.get("id") or 0) == self.template_inbound_id), None)
-        if not template:
-            raise RuntimeError("sanaei_template_inbound_not_found")
-        _atomic_backup("sanaei-inbounds", rows)
+        if not locs:
+            raise RuntimeError("no_locations")
 
-        for x in rows:
-            if str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX) and x.get("id"):
-                self.delete_inbound(int(x["id"]))
-
+        # Plan before any destructive operation. Existing GANJ country ports are
+        # therefore preserved across re-syncs.
         plan = self.plan_locations(locs)
         planned_ports = {
             str(x.get("country_code")): int(x.get("local_port"))
             for x in (plan.get("items") or [])
         }
+
+        rows_before = self.list_inbounds()
+        template = next((x for x in rows_before if int(x.get("id") or 0) == self.template_inbound_id), None)
+        if not template:
+            raise RuntimeError("sanaei_template_inbound_not_found")
+
+        old_xray, test_url = self.get_xray()
+        old_xray = copy.deepcopy(old_xray)
+        _atomic_backup("sanaei-inbounds", rows_before)
+        _atomic_backup("sanaei-xray", old_xray)
+
+        allowed = ["enable", "listen", "protocol", "settings", "streamSettings", "sniffing", "allocate"]
+        existing_by_country = {}
+        old_managed = []
+        for row in rows_before:
+            code = _country_from_ganj_remark(str(row.get("remark") or ""))
+            if code:
+                existing_by_country[code] = row
+                old_managed.append(copy.deepcopy(row))
+
+        desired_codes = {x["country_code"] for x in locs}
+        original_ids = {int(x.get("id") or 0) for x in old_managed if x.get("id")}
         created = []
 
-        allowed = ["enable","listen","protocol","settings","streamSettings","sniffing","allocate"]
-        for loc in locs:
-            port = planned_ports[loc["country_code"]]
+        def payload_for(loc):
             payload = {k: copy.deepcopy(template[k]) for k in allowed if k in template}
             payload["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
-            payload["port"] = port
+            payload["port"] = int(planned_ports[loc["country_code"]])
             payload["enable"] = True
-            self.add_inbound(payload)
-            created.append({"country_code": loc["country_code"], "local_port": port, "gateway_port": loc["port"]})
+            return payload
 
-        now_rows = self.list_inbounds()
-        cfg, test_url = self.get_xray()
-        _atomic_backup("sanaei-xray", cfg)
-        outbounds = cfg.setdefault("outbounds", [])
-        rules = cfg.setdefault("routing", {}).setdefault("rules", [])
-        outbounds[:] = [x for x in outbounds if not str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
-        rules[:] = [
-            x for x in rules
-            if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
-        ]
+        try:
+            # Update existing country inbounds in place so IDs/tags/subscription
+            # references stay stable; only missing countries are created.
+            for loc in locs:
+                code = loc["country_code"]
+                payload = payload_for(loc)
+                existing = existing_by_country.get(code)
+                if existing and existing.get("id"):
+                    self.update_inbound(int(existing["id"]), payload)
+                else:
+                    self.add_inbound(payload)
+                created.append({
+                    "country_code": code,
+                    "local_port": int(planned_ports[code]),
+                    "gateway_port": int(loc["port"]),
+                })
 
-        for item, loc in zip(created, locs):
-            row = next((x for x in now_rows if x.get("remark") == f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"), None)
-            inbound_tag = str((row or {}).get("tag") or (f"inbound-{row.get('id')}" if row and row.get("id") else f"inbound-{item['local_port']}"))
-            item["inbound_tag"] = inbound_tag
-            out_tag = GANJ_OUT_PREFIX + loc["country_code"].lower()
-            outbounds.append({
-                "tag": out_tag,
-                "protocol": "socks",
-                "settings": {"servers": [{"address": "10.60.0.1", "port": loc["port"]}]},
-            })
-            rules.insert(0, {"type": "field", "inboundTag": [inbound_tag], "outboundTag": out_tag})
+            now_rows = self.list_inbounds()
+            desired_rows = {}
+            for row in now_rows:
+                code = _country_from_ganj_remark(str(row.get("remark") or ""))
+                if code in desired_codes:
+                    desired_rows[code] = row
+            if len(desired_rows) != len(desired_codes):
+                raise RuntimeError("sanaei_post_apply_inbound_missing")
 
-        self.update_xray(cfg, test_url)
-        return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
+            cfg = copy.deepcopy(old_xray)
+            outbounds = cfg.setdefault("outbounds", [])
+            rules = cfg.setdefault("routing", {}).setdefault("rules", [])
+            outbounds[:] = [x for x in outbounds if not str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
+            rules[:] = [
+                x for x in rules
+                if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
+                and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+            ]
+
+            for item, loc in zip(created, locs):
+                row = desired_rows[loc["country_code"]]
+                inbound_tag = str(
+                    row.get("tag")
+                    or (f"inbound-{row.get('id')}" if row.get("id") else f"inbound-{item['local_port']}")
+                )
+                item["inbound_tag"] = inbound_tag
+                out_tag = GANJ_OUT_PREFIX + loc["country_code"].lower()
+                outbounds.append({
+                    "tag": out_tag,
+                    "protocol": "socks",
+                    "settings": {"servers": [{"address": "10.60.0.1", "port": int(loc["port"])}]},
+                })
+                rules.insert(0, {"type": "field", "inboundTag": [inbound_tag], "outboundTag": out_tag})
+
+            self.update_xray(cfg, test_url)
+
+            # Remove countries no longer published only after routing switched.
+            for row in now_rows:
+                code = _country_from_ganj_remark(str(row.get("remark") or ""))
+                if code and code not in desired_codes and row.get("id"):
+                    self.delete_inbound(int(row["id"]))
+
+            final_rows = self.list_inbounds()
+            final_codes = {
+                _country_from_ganj_remark(str(x.get("remark") or ""))
+                for x in final_rows
+            }
+            if not desired_codes.issubset(final_codes):
+                raise RuntimeError("sanaei_post_install_verification_failed")
+
+            return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
+
+        except Exception:
+            # Best-effort transactional rollback: remove objects created by this
+            # attempt, restore previous managed inbounds in-place where possible,
+            # and restore the old Xray routing document.
+            try:
+                current = self.list_inbounds()
+                current_ids = {int(x.get("id") or 0): x for x in current if x.get("id")}
+                for row in current:
+                    code = _country_from_ganj_remark(str(row.get("remark") or ""))
+                    iid = int(row.get("id") or 0)
+                    if code and iid and iid not in original_ids:
+                        self.delete_inbound(iid)
+
+                for old in old_managed:
+                    iid = int(old.get("id") or 0)
+                    restore = {k: copy.deepcopy(old[k]) for k in allowed if k in old}
+                    restore["remark"] = str(old.get("remark") or "")
+                    restore["port"] = int(old.get("port") or 0)
+                    restore["enable"] = bool(old.get("enable", True))
+                    if iid and iid in current_ids:
+                        self.update_inbound(iid, restore)
+                    else:
+                        self.add_inbound(restore)
+                self.update_xray(copy.deepcopy(old_xray), test_url)
+            except Exception:
+                pass
+            raise
 
     def remove_locations(self) -> dict[str, Any]:
         self.login()
