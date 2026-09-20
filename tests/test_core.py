@@ -63,7 +63,10 @@ class PasarGuardGenerationTests(unittest.TestCase):
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: []
         captured = {}
-        adapter.update_core = lambda c, config: captured.update({"config": config})
+        def apply_core(c, config):
+            core["config"] = config
+            captured["config"] = config
+        adapter.update_core = apply_core
         result = adapter.install_locations([
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
