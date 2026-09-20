@@ -326,6 +326,34 @@ def panel_status() -> int:
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
+
+def panel_discovery() -> int:
+    profile = panel_profile()
+    result = adapter_from_profile(profile).discover()
+    _print_inbounds(str(profile.get("type") or ""), result.get("inbounds") or [])
+    if profile.get("type") == "pasarguard":
+        _print_hosts(result.get("hosts") or [], str(profile.get("template_inbound_tag") or ""))
+    return 0
+
+
+def locations_plan() -> int:
+    profile = panel_profile()
+    adapter = adapter_from_profile(profile)
+    plan = adapter.plan_locations(central_locations())
+    items = plan.get("items") or []
+    print("\nGANJ location plan")
+    print("  CC  Local Port  Gateway Port  Inbound")
+    print("  --  ----------  ------------  ------------------------")
+    for item in items:
+        print(
+            f"  {str(item.get('country_code') or ''):<2}  "
+            f"{str(item.get('local_port') or ''):<10}  "
+            f"{str(item.get('gateway_port') or ''):<12}  "
+            f"{str(item.get('inbound_tag') or item.get('template_inbound_id') or '')[:24]}"
+        )
+    print(f"\nTotal: {len(items)} · no changes applied")
+    return 0
+
 def central_locations() -> list[dict[str, Any]]:
     cfg = AgentConfig.load()
     data = CentralClient(cfg).desired()
