@@ -1,0 +1,13 @@
+[Unit]
+Description=GANJ WireGuard SOCKS Firewall
+After=network-online.target ufw.service wg-quick@wg0.service
+Wants=network-online.target
+Before=panel-gateway-runtime.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ganj-sync-wg-firewall
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
