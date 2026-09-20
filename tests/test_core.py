@@ -570,10 +570,14 @@ class PasarGuardGenerationTests(unittest.TestCase):
             [x["inbound_tag"] for x in created_hosts],
             ["ganj-de 🇩🇪 Germany — Berlin", "ganj-nl 🇳🇱 Netherlands — Amsterdam"],
         )
+        self.assertEqual(
+            [x["remark"] for x in created_hosts],
+            ["🇩🇪 Germany — Berlin", "🇳🇱 Netherlands — Amsterdam"],
+        )
         template = hosts[0]
         for clone in created_hosts:
             for key, value in template.items():
-                if key in {"id", "inbound_tag", "port"}:
+                if key in {"id", "inbound_tag", "port", "remark"}:
                     continue
                 self.assertEqual(clone.get(key), value, key)
         self.assertEqual(
