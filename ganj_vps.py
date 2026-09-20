@@ -173,8 +173,8 @@ def locations_list() -> int:
     return 0
 
 def locations_install(assume_yes: bool = False) -> int:
-    if not wg_status().get("up"):
-        raise RuntimeError("wireguard_not_connected")
+    if not gateway_tunnel_ok():
+        raise RuntimeError("wireguard_gateway_unreachable")
     profile = panel_profile()
     rows = central_locations()
     if not rows:
@@ -359,6 +359,28 @@ def wg_status() -> dict[str, Any]:
             transfer = s.split(":", 1)[1].strip()
     return {"installed": True, "up": True, "endpoint": endpoint, "handshake": handshake, "transfer": transfer}
 
+def gateway_tunnel_ok() -> bool:
+    if not wg_status().get("up"):
+        return False
+    try:
+        p = run(["ping", "-c", "1", "-W", "2", "10.60.0.1"], timeout=4)
+        if p.returncode == 0:
+            return True
+    except Exception:
+        pass
+    try:
+        p = run(["wg", "show", "ganj-vps", "latest-handshakes"], timeout=5)
+        now = int(time.time())
+        for line in p.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                ts = int(parts[-1])
+                if ts > 0 and now - ts <= 180:
+                    return True
+    except Exception:
+        pass
+    return False
+
 def panel_runtime_status(panel: dict[str, Any]) -> dict[str, Any]:
     if panel["type"] == "sanaei":
         p = run(["systemctl", "is-active", "x-ui"], timeout=5)
@@ -381,7 +403,7 @@ def heartbeat_payload() -> dict[str, Any]:
         "os": os_summary(),
         "panel": panel,
         "panel_runtime": panel_runtime_status(panel),
-        "wireguard": wg_status(),
+        "wireguard": {**wg_status(), "gateway_reachable": gateway_tunnel_ok()},
         "capabilities": {
             "wireguard": bool(shutil.which("wg")),
             "panel_sanaei": panel["type"] == "sanaei",
@@ -453,8 +475,8 @@ def execute_central_command(action: str, payload: dict[str, Any] | None = None) 
     if action == "panel_status":
         return adapter_from_profile(panel_profile()).status()
     if action == "locations_install":
-        if not wg_status().get("up"):
-            raise RuntimeError("wireguard_not_connected")
+        if not gateway_tunnel_ok():
+            raise RuntimeError("wireguard_gateway_unreachable")
         rows = central_locations()
         result = adapter_from_profile(panel_profile()).install_locations(rows)
         return {"installed": len(result.get("installed") or []), "locations": [x.get("country_code") for x in result.get("installed") or []]}
