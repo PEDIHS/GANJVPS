@@ -741,6 +741,17 @@ def enroll(central: str, token: str) -> None:
     print(f"[+] Enrolled node: {data['node_id']}")
     print("[+] WireGuard peer configured.")
 
+    # A node may be installed first and enrolled later from the CLI. Start the
+    # agent here as well, not only from install.sh.
+    unit = Path("/etc/systemd/system/ganj-vps-agent.service")
+    if unit.exists():
+        run(["systemctl", "daemon-reload"], timeout=10)
+        svc = run(["systemctl", "enable", "--now", "ganj-vps-agent"], timeout=20)
+        if svc.returncode == 0:
+            print("[+] GANJ VPS agent enabled and started.")
+        else:
+            print("[!] Enrollment succeeded, but the agent service could not be started automatically.")
+
 def sync_once() -> dict[str, Any]:
     cfg = AgentConfig.load()
     client = CentralClient(cfg)
