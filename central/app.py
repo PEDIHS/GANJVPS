@@ -112,12 +112,17 @@ def init_db() -> None:
                 issued_at INTEGER NOT NULL,
                 expires_at INTEGER,
                 used_at INTEGER,
-                node_id TEXT
+                node_id TEXT,
+                bound_ip TEXT,
+                bound_fingerprint TEXT,
+                bound_wg_public_key TEXT
             );
             CREATE TABLE IF NOT EXISTS nodes (
                 id TEXT PRIMARY KEY,
                 representative_id TEXT NOT NULL REFERENCES representatives(id) ON DELETE CASCADE,
                 name TEXT NOT NULL,
+                bound_ip TEXT,
+                fingerprint TEXT,
                 secret_hash TEXT NOT NULL,
                 wg_public_key TEXT NOT NULL,
                 wg_ip TEXT NOT NULL,
@@ -155,6 +160,22 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_commands_node ON commands(node_id, status, id);
             """
         )
+        migrations = {
+            "enrollment_tokens": {
+                "bound_ip": "TEXT",
+                "bound_fingerprint": "TEXT",
+                "bound_wg_public_key": "TEXT",
+            },
+            "nodes": {
+                "bound_ip": "TEXT",
+                "fingerprint": "TEXT",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, ddl in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 @app.on_event("startup")
@@ -309,15 +330,54 @@ def issue_representative_token(
     return rep_id, raw_token
 
 
-def authenticate_node(node_id: str | None, authorization: str | None) -> sqlite3.Row:
+def request_public_ip(request: Request) -> str:
+    peer = str(request.client.host if request.client else "").strip()
+    raw = peer
+    try:
+        peer_ip = __import__("ipaddress").ip_address(peer)
+        if peer_ip.is_loopback:
+            raw = str(request.headers.get("x-real-ip") or peer).strip()
+    except ValueError:
+        pass
+    try:
+        return str(__import__("ipaddress").ip_address(raw))
+    except ValueError:
+        raise HTTPException(400, "invalid_client_ip")
+
+
+def authenticate_node(
+    node_id: str | None,
+    authorization: str | None,
+    request: Request,
+    fingerprint: str | None = None,
+) -> sqlite3.Row:
     if not node_id or not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "node_auth_required")
     secret = authorization.split(" ", 1)[1].strip()
+    client_ip = request_public_ip(request)
+    disable_peer: tuple[str, str] | None = None
     with db() as conn:
         row = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
-    if not row or not secure_eq(str(row["secret_hash"]), hash_secret(secret)):
-        raise HTTPException(401, "invalid_node_credentials")
-    return row
+        if not row or not secure_eq(str(row["secret_hash"]), hash_secret(secret)):
+            raise HTTPException(401, "invalid_node_credentials")
+        if str(row["status"] or "") in {"revoked", "ip_mismatch", "identity_mismatch"}:
+            raise HTTPException(403, "node_binding_locked")
+        reason = None
+        if row["bound_ip"] and str(row["bound_ip"]) != client_ip:
+            reason = "ip_mismatch"
+        elif fingerprint and row["fingerprint"] and str(row["fingerprint"]) != str(fingerprint):
+            reason = "identity_mismatch"
+        if reason:
+            conn.execute("UPDATE nodes SET status=?,updated_at=? WHERE id=?", (reason, now_ts(), node_id))
+            disable_peer = (str(row["wg_public_key"]), str(row["wg_ip"]))
+        else:
+            return row
+    if disable_peer:
+        try:
+            wg_peer_apply(disable_peer[0], disable_peer[1], False)
+        except Exception:
+            pass
+    raise HTTPException(403, "node_binding_changed_rotate_token_required")
 
 
 def record_usage(conn: sqlite3.Connection, node: sqlite3.Row, wireguard: dict[str, Any]) -> int:
@@ -553,6 +613,10 @@ async def enroll(request: Request):
         raise HTTPException(400, "token_required")
     token_hash = hash_secret(raw_token)
     now = now_ts()
+    client_ip = request_public_ip(request)
+    fingerprint = str(body.get("fingerprint") or "").strip()
+    if len(fingerprint) < 32:
+        raise HTTPException(400, "fingerprint_required")
     with db() as conn:
         tok = conn.execute("SELECT * FROM enrollment_tokens WHERE token_hash=?", (token_hash,)).fetchone()
         if not tok:
@@ -576,18 +640,21 @@ async def enroll(request: Request):
         if not wg_public_key:
             raise HTTPException(400, "wg_public_key_required")
         conn.execute(
-            """INSERT INTO nodes(id,representative_id,name,secret_hash,wg_public_key,wg_ip,status,agent_version,panel_json,last_seen_at,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO nodes(id,representative_id,name,bound_ip,fingerprint,secret_hash,wg_public_key,wg_ip,status,agent_version,panel_json,last_seen_at,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 node_id, rep["id"], str(body.get("node_name") or body.get("hostname") or "Representative panel"),
+                client_ip, fingerprint,
                 hash_secret(node_secret_raw), wg_public_key, wg_ip, "online",
                 str(body.get("agent_version") or ""), json.dumps(body.get("panel") or {}, ensure_ascii=False),
                 now, now, now,
             ),
         )
         conn.execute(
-            "UPDATE enrollment_tokens SET status='used',used_at=?,node_id=? WHERE id=?",
-            (now, node_id, tok["id"]),
+            """UPDATE enrollment_tokens
+               SET status='used',used_at=?,node_id=?,bound_ip=?,bound_fingerprint=?,bound_wg_public_key=?
+               WHERE id=?""",
+            (now, node_id, client_ip, fingerprint, wg_public_key, tok["id"]),
         )
         add_event(conn, "panel_enrolled", rep["id"], node_id)
         try:
@@ -611,8 +678,8 @@ async def enroll(request: Request):
 
 @app.post("/v1/heartbeat")
 async def heartbeat(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
     body = await request.json()
+    node = authenticate_node(x_ganj_node_id, authorization, request, str(body.get("fingerprint") or "") or None)
     now = now_ts()
     with db() as conn:
         current = conn.execute("SELECT * FROM nodes WHERE id=?", (node["id"],)).fetchone()
@@ -636,8 +703,8 @@ async def heartbeat(request: Request, authorization: str | None = Header(default
 
 
 @app.get("/v1/desired")
-def desired(authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+def desired(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     with db() as conn:
         rep = conn.execute("SELECT * FROM representatives WHERE id=?", (node["representative_id"],)).fetchone()
     if not rep:
@@ -666,7 +733,7 @@ def desired(authorization: str | None = Header(default=None), x_ganj_node_id: st
 
 @app.post("/v1/report")
 async def report(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     body = await request.json()
     with db() as conn:
         add_event(conn, "agent_report", node["representative_id"], node["id"], body)
@@ -674,8 +741,8 @@ async def report(request: Request, authorization: str | None = Header(default=No
 
 
 @app.get("/v1/commands/next")
-def next_command(authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+def next_command(request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     with db() as conn:
         row = conn.execute(
             "SELECT * FROM commands WHERE node_id=? AND status='pending' ORDER BY id LIMIT 1",
@@ -689,7 +756,7 @@ def next_command(authorization: str | None = Header(default=None), x_ganj_node_i
 
 @app.post("/v1/commands/{command_id}/result")
 async def command_result(command_id: int, request: Request, authorization: str | None = Header(default=None), x_ganj_node_id: str | None = Header(default=None)):
-    node = authenticate_node(x_ganj_node_id, authorization)
+    node = authenticate_node(x_ganj_node_id, authorization, request)
     body = await request.json()
     with db() as conn:
         row = conn.execute("SELECT * FROM commands WHERE id=? AND node_id=?", (command_id, node["id"])).fetchone()
