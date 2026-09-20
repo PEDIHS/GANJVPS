@@ -144,6 +144,13 @@ def _country_from_ganj_remark(value: str) -> str | None:
     for code, label in DISPLAY_LABELS.items():
         if raw == label:
             return code
+    # New human-facing names begin with a Unicode flag. Decode the two
+    # regional-indicator symbols back to an ISO alpha-2 country code.
+    if len(raw) >= 2:
+        a, b = ord(raw[0]), ord(raw[1])
+        base = 0x1F1E6
+        if base <= a <= base + 25 and base <= b <= base + 25:
+            return chr(ord("A") + a - base) + chr(ord("A") + b - base)
     return None
 
 
