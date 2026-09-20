@@ -16,6 +16,26 @@ BACKUP_DIR = Path("/var/lib/ganj-vps/backups")
 GANJ_IN_PREFIX = "ganj-"
 GANJ_OUT_PREFIX = "ganj-egress-"
 GANJ_REMARK_PREFIX = "GANJ "
+REQUIRED_USER_PROTOCOL = "vless"
+
+# Stable user-facing inbound ports. These are separate from the private
+# central gateway SOCKS ports (1080, 1081, ...).
+PREFERRED_LOCAL_PORTS = {
+    "FR": 1443, "NL": 2443, "GB": 3443, "DE": 4443, "CA": 5443,
+    "PL": 6443, "IT": 7443, "US": 9443, "FI": 10443, "LV": 11443,
+    "ES": 12443, "CH": 13443, "RO": 14443, "RU": 15443, "TR": 16443,
+    "LT": 17443, "SE": 18443, "SG": 19443, "BG": 21443, "EE": 22443,
+    "NO": 23443, "AT": 25443, "BE": 26443, "CZ": 27443, "DK": 28443,
+    "IE": 29443, "AE": 30443, "JP": 31443, "KR": 32443, "AU": 33443,
+}
+
+DISPLAY_LABELS = {
+    "FR": "🇫🇷 France dc",
+    "NL": "🇳🇱 The Netherlands",
+    "DE": "🇩🇪 Germany",
+    "US": "🇺🇸 United States",
+    "GB": "🇬🇧 United Kingdom",
+}
 
 
 def _atomic_backup(name: str, data: Any) -> Path:
@@ -107,9 +127,52 @@ def _listen_text(row: dict[str, Any]) -> str:
     return str(value)
 
 
+def _display_label(loc: dict[str, Any]) -> str:
+    code = str(loc.get("country_code") or "").upper()
+    if code in DISPLAY_LABELS:
+        return DISPLAY_LABELS[code]
+    flag = str(loc.get("flag") or "").strip()
+    name = str(loc.get("name") or code).strip()
+    return f"{flag} {name}".strip()
+
+
 def _country_from_ganj_remark(value: str) -> str | None:
-    m = re.match(r"^GANJ\s+([A-Za-z]{2})(?:\s|·|$)", str(value or "").strip())
-    return m.group(1).upper() if m else None
+    raw = str(value or "").strip()
+    m = re.match(r"^GANJ\s+([A-Za-z]{2})(?:\s|·|$)", raw)
+    if m:
+        return m.group(1).upper()
+    for code, label in DISPLAY_LABELS.items():
+        if raw == label:
+            return code
+    return None
+
+
+def _require_vless(template: dict[str, Any]) -> None:
+    if _protocol_name(template).lower() != REQUIRED_USER_PROTOCOL:
+        raise RuntimeError("template_protocol_must_be_vless")
+
+
+def _plan_stable_country_ports(
+    locs: list[dict[str, Any]],
+    used: set[int],
+    existing_by_country: dict[str, int],
+) -> dict[str, int]:
+    live = system_listening_ports()
+    preserved = set(existing_by_country.values())
+    assigned: dict[str, int] = {}
+    for loc in locs:
+        code = loc["country_code"]
+        if code in existing_by_country:
+            assigned[code] = int(existing_by_country[code])
+            continue
+        preferred = PREFERRED_LOCAL_PORTS.get(code)
+        if preferred is None:
+            raise RuntimeError(f"preferred_port_missing_{code}")
+        if preferred in used or (preferred in live and preferred not in preserved):
+            raise RuntimeError(f"preferred_port_conflict_{code}_{preferred}")
+        assigned[code] = int(preferred)
+        used.add(int(preferred))
+    return assigned
 
 
 def _strip_runtime_inbound_fields(src: dict[str, Any]) -> dict[str, Any]:
@@ -284,6 +347,7 @@ class PasarGuardAdapter:
             raise RuntimeError("pasarguard_template_inbound_not_found")
         if str(template.get("tag") or "").startswith(GANJ_IN_PREFIX):
             raise RuntimeError("pasarguard_template_must_be_dedicated_non_ganj_inbound")
+        _require_vless(template)
         hosts = self.get_hosts()
         template_host = next((x for x in hosts if int(x.get("id") or 0) == self.template_host_id), None)
         if self.template_host_id and not template_host:
@@ -300,13 +364,7 @@ class PasarGuardAdapter:
             for x in inbounds
             if x.get("port") and not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
         }
-        preserved = set(existing_by_country.values())
-        missing = [loc for loc in locs if loc["country_code"] not in existing_by_country]
-        new_ports = iter(choose_port_block(used | preserved, len(missing), self.base_port, ignore_listening=preserved))
-        assigned: dict[str, int] = {}
-        for loc in locs:
-            code = loc["country_code"]
-            assigned[code] = existing_by_country.get(code) or next(new_ports)
+        assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
         for loc in locs:
             local_port = assigned[loc["country_code"]]
@@ -426,7 +484,7 @@ class PasarGuardAdapter:
                 for item, loc in zip(created, locs):
                     h = copy.deepcopy(template_host)
                     h.pop("id", None)
-                    h["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
+                    h["remark"] = _display_label(loc)
                     h["inbound_tag"] = item["inbound_tag"]
                     host_port_mode = str(self.profile.get("host_port_mode") or "template")
                     if host_port_mode == "inbound":
@@ -635,7 +693,7 @@ class SanaeiAdapter:
     def managed_status(self) -> dict[str, Any]:
         self.login()
         rows = self.list_inbounds()
-        managed = [x for x in rows if str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)]
+        managed = [x for x in rows if _country_from_ganj_remark(str(x.get("remark") or ""))]
         cfg, _ = self.get_xray()
         outbounds = cfg.get("outbounds") or []
         rules = (cfg.get("routing") or {}).get("rules") or []
@@ -662,6 +720,7 @@ class SanaeiAdapter:
             raise RuntimeError("sanaei_template_inbound_not_found")
         if str(template.get("remark") or "").startswith(GANJ_REMARK_PREFIX):
             raise RuntimeError("sanaei_template_must_be_dedicated_non_ganj_inbound")
+        _require_vless(template)
         existing_by_country: dict[str, int] = {}
         for row in rows:
             code = _country_from_ganj_remark(str(row.get("remark") or ""))
@@ -672,13 +731,7 @@ class SanaeiAdapter:
             for x in rows
             if x.get("port") and not str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)
         }
-        preserved = set(existing_by_country.values())
-        missing = [loc for loc in locs if loc["country_code"] not in existing_by_country]
-        new_ports = iter(choose_port_block(used | preserved, len(missing), self.base_port, ignore_listening=preserved))
-        assigned: dict[str, int] = {}
-        for loc in locs:
-            code = loc["country_code"]
-            assigned[code] = existing_by_country.get(code) or next(new_ports)
+        assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
         for loc in locs:
             local_port = assigned[loc["country_code"]]
@@ -733,7 +786,7 @@ class SanaeiAdapter:
 
         def payload_for(loc):
             payload = {k: copy.deepcopy(template[k]) for k in allowed if k in template}
-            payload["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
+            payload["remark"] = _display_label(loc)
             payload["port"] = int(planned_ports[loc["country_code"]])
             payload["enable"] = True
             return payload
@@ -839,7 +892,7 @@ class SanaeiAdapter:
         self.login()
         removed = 0
         for x in self.list_inbounds():
-            if str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX) and x.get("id"):
+            if _country_from_ganj_remark(str(x.get("remark") or "")) and x.get("id"):
                 self.delete_inbound(int(x["id"]))
                 removed += 1
         cfg, test_url = self.get_xray()
