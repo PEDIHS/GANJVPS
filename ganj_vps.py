@@ -312,15 +312,11 @@ def configure_panel(force_manual: bool = False) -> int:
             profile["host_port_mode"] = {"1": "template", "2": "inbound", "3": "none"}.get(hp, "template")
 
     print("\nLocal inbound port allocation:")
-    print("  [1] Automatic collision-free block (recommended)")
-    print("  [2] Start near a custom port and skip collisions")
-    mode = input("Select [1]: ").strip() or "1"
-    if mode == "2":
-        profile["base_port"] = int(_ask("Preferred first local port", "20000"))
-        profile["port_mode"] = "custom"
-    else:
-        profile["base_port"] = 20000
-        profile["port_mode"] = "auto"
+    print("  Fixed GANJ country mapping will be used.")
+    print("  Example: FR :1443 · NL :2443 · GB :3443 · DE :4443 · US :9443")
+    print("  Every requested port is conflict-checked before apply.")
+    profile["base_port"] = 1443
+    profile["port_mode"] = "fixed-country-map"
 
     # Verify again using the final profile before persisting credentials.
     adapter = adapter_from_profile(profile)
@@ -334,7 +330,7 @@ def configure_panel(force_manual: bool = False) -> int:
     if kind == "pasarguard":
         print(f"    Hosts:      {verified.get('hosts', 0)}")
         print(f"    Host clone: {profile.get('template_host_id') or 'disabled'}")
-    print(f"    Port mode:  {profile.get('port_mode')} · base {profile.get('base_port')}")
+    print(f"    Port mode:  {profile.get('port_mode')}")
 
     if CONFIG_FILE.exists() and SECRET_FILE.exists():
         try:
