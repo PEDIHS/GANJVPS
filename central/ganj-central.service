@@ -1,0 +1,21 @@
+[Unit]
+Description=GANJ Central Control Plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ganj-vps
+EnvironmentFile=-/etc/ganj-central/central.env
+ExecStart=/opt/ganj-vps/venv/bin/uvicorn central.app:app --host 127.0.0.1 --port 8787 --proxy-headers
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ganj-central /etc/ganj-central
+
+[Install]
+WantedBy=multi-user.target
