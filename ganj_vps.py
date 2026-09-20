@@ -398,9 +398,7 @@ def locations_plan() -> int:
     print(f"\nTotal: {len(items)} · no changes applied")
     return 0
 
-def central_locations() -> list[dict[str, Any]]:
-    cfg = AgentConfig.load()
-    data = CentralClient(cfg).desired()
+def locations_from_desired(data: dict[str, Any]) -> list[dict[str, Any]]:
     license_info = data.get("license") or {}
     if license_info and not license_info.get("active", False):
         raise RuntimeError(str(license_info.get("reason") or "license_inactive"))
@@ -412,9 +410,6 @@ def central_locations() -> list[dict[str, Any]]:
         if code in LOCATION_CATALOG:
             published[code] = dict(row)
 
-    # Always return the complete installer catalog. A location without a
-    # published gateway config is still materialized as Host/Inbound and is
-    # routed to blackhole until a later sync makes it available.
     rows: list[dict[str, Any]] = []
     for code, meta in LOCATION_CATALOG.items():
         source = published.get(code)
@@ -432,6 +427,24 @@ def central_locations() -> list[dict[str, Any]]:
         })
         rows.append(raw)
     return rows
+
+
+def locations_signature(rows: list[dict[str, Any]]) -> str:
+    compact = [
+        {
+            "country_code": str(row.get("country_code") or ""),
+            "port": int(row.get("port") or 0),
+            "available": bool(row.get("available")),
+        }
+        for row in rows
+    ]
+    raw = json.dumps(compact, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def central_locations() -> list[dict[str, Any]]:
+    cfg = AgentConfig.load()
+    return locations_from_desired(CentralClient(cfg).desired())
 
 def locations_list() -> int:
     rows = central_locations()
