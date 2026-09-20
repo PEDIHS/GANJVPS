@@ -317,6 +317,10 @@ class PasarGuardAdapter:
         self.s = requests.Session()
         self.s.trust_env = False
         self.s.verify = bool(profile.get("verify_tls", False))
+        if not self.s.verify:
+            requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
+                requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
+            )
 
     def login(self) -> None:
         r = self.s.post(
@@ -756,6 +760,10 @@ class SanaeiAdapter:
         self.s = requests.Session()
         self.s.trust_env = False
         self.s.verify = bool(profile.get("verify_tls", False))
+        if not self.s.verify:
+            requests.packages.urllib3.disable_warnings(  # type: ignore[attr-defined]
+                requests.packages.urllib3.exceptions.InsecureRequestWarning  # type: ignore[attr-defined]
+            )
         self.s.headers.update({"Accept": "application/json"})
         if self.api_token:
             self.s.headers["Authorization"] = f"Bearer {self.api_token}"
