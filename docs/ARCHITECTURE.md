@@ -27,6 +27,8 @@ Location installation follows backup -> generate -> apply -> verify semantics an
 
 The central gateway publishes a curated 30-location catalog. Each country has a stable private SOCKS port. Panel adapters create local country inbounds and route them to the corresponding private gateway port over WireGuard.
 
+The agent accepts multiple gateway candidates from desired state (`gateway.candidates`, `gateway.gateways`, `gateway.endpoints` or top-level `gateways`) and from the local root-only `/etc/ganj-vps/gateways.json` file. Candidates are ranked by latency. Failed switches are verified against the private gateway and rolled back transactionally. Desired location changes are reconciled automatically so placeholders become live routes without manual reinstall.
+
 ## Central commands
 
 The command protocol is allow-list based. Supported actions are limited to:
@@ -37,5 +39,9 @@ The command protocol is allow-list based. Supported actions are limited to:
 - locations_remove
 - diagnostics
 - wg_restart
+- gateway_status
+- gateway_switch
+- reconcile
+- live_status
 
 There is no arbitrary command or shell endpoint.

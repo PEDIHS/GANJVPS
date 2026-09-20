@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP="GANJ VPS"
-VERSION="0.3.1"
+VERSION="0.4.0"
 REPO="PEDIHS/GANJVPS"
 INSTALL_DIR="/opt/ganj-vps"
 ETC_DIR="/etc/ganj-vps"
@@ -63,9 +63,13 @@ systemctl daemon-reload
 CENTRAL_URL="${GANJ_CENTRAL_URL:-$DEFAULT_CENTRAL}"
 ENROLL_TOKEN="${GANJ_ENROLL_TOKEN:-}"
 SKIP_ENROLL="${GANJ_SKIP_ENROLL:-0}"
+DEFER_RESTART="${GANJ_DEFER_RESTART:-0}"
+DEFER_RESTART="${GANJ_DEFER_RESTART:-0}"
 
 if [[ "$SKIP_ENROLL" == "1" ]]; then
-  systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
+  if [[ "$DEFER_RESTART" != "1" ]]; then
+    systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
+  fi
   say "${c_green}[+] GANJ VPS files updated.${c_reset}"
   exit 0
 fi
