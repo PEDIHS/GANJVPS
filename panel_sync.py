@@ -75,8 +75,11 @@ def system_listening_ports() -> set[int]:
     return ports
 
 
-def choose_port_block(existing: set[int], count: int, preferred_base: int = 20000) -> list[int]:
-    existing = set(existing) | system_listening_ports()
+def choose_port_block(existing: set[int], count: int, preferred_base: int = 20000, ignore_listening: set[int] | None = None) -> list[int]:
+    live = system_listening_ports()
+    if ignore_listening:
+        live -= set(ignore_listening)
+    existing = set(existing) | live
     starts = [preferred_base, 20000, 21000, 22000, 23000, 24000, 25000, 30000, 31000, 32000]
     seen: set[int] = set()
     for start in starts:
@@ -100,6 +103,11 @@ def _listen_text(row: dict[str, Any]) -> str:
     if value in (None, "", "0.0.0.0", "::"):
         return "*"
     return str(value)
+
+
+def _country_from_ganj_remark(value: str) -> str | None:
+    m = re.match(r"^GANJ\s+([A-Za-z]{2})(?:\s|·|$)", str(value or "").strip())
+    return m.group(1).upper() if m else None
 
 
 def _strip_runtime_inbound_fields(src: dict[str, Any]) -> dict[str, Any]:
@@ -276,14 +284,28 @@ class PasarGuardAdapter:
         template_host = next((x for x in hosts if int(x.get("id") or 0) == self.template_host_id), None)
         if self.template_host_id and not template_host:
             raise RuntimeError("pasarguard_template_host_not_found")
+        existing_by_country: dict[str, int] = {}
+        for row in inbounds:
+            tag = str(row.get("tag") or "")
+            if tag.startswith(GANJ_IN_PREFIX) and row.get("port"):
+                code = tag[len(GANJ_IN_PREFIX):].upper()
+                if len(code) == 2:
+                    existing_by_country[code] = int(row["port"])
         used = {
             int(x.get("port"))
             for x in inbounds
             if x.get("port") and not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
         }
-        ports = choose_port_block(used, len(locs), self.base_port)
+        preserved = set(existing_by_country.values())
+        missing = [loc for loc in locs if loc["country_code"] not in existing_by_country]
+        new_ports = iter(choose_port_block(used | preserved, len(missing), self.base_port, ignore_listening=preserved))
+        assigned: dict[str, int] = {}
+        for loc in locs:
+            code = loc["country_code"]
+            assigned[code] = existing_by_country.get(code) or next(new_ports)
         items = []
-        for loc, local_port in zip(locs, ports):
+        for loc in locs:
+            local_port = assigned[loc["country_code"]]
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
@@ -548,14 +570,26 @@ class SanaeiAdapter:
         template = next((x for x in rows if int(x.get("id") or 0) == self.template_inbound_id), None)
         if not template:
             raise RuntimeError("sanaei_template_inbound_not_found")
+        existing_by_country: dict[str, int] = {}
+        for row in rows:
+            code = _country_from_ganj_remark(str(row.get("remark") or ""))
+            if code and row.get("port"):
+                existing_by_country[code] = int(row["port"])
         used = {
             int(x.get("port"))
             for x in rows
             if x.get("port") and not str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)
         }
-        ports = choose_port_block(used, len(locs), self.base_port)
+        preserved = set(existing_by_country.values())
+        missing = [loc for loc in locs if loc["country_code"] not in existing_by_country]
+        new_ports = iter(choose_port_block(used | preserved, len(missing), self.base_port, ignore_listening=preserved))
+        assigned: dict[str, int] = {}
+        for loc in locs:
+            code = loc["country_code"]
+            assigned[code] = existing_by_country.get(code) or next(new_ports)
         items = []
-        for loc, local_port in zip(locs, ports):
+        for loc in locs:
+            local_port = assigned[loc["country_code"]]
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
