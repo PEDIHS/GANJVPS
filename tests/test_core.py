@@ -333,7 +333,7 @@ class SanaeiGenerationTests(unittest.TestCase):
         fr = next(x for x in rows if panel_sync._country_from_ganj_remark(str(x.get("remark",""))) == "FR")
         self.assertEqual(de["id"], 30)
         self.assertEqual(de["port"], 22100)
-        self.assertEqual(fr["port"], 20000)
+        self.assertEqual(fr["port"], 1443)
         self.assertEqual(len(result["installed"]), 2)
 
 
