@@ -473,7 +473,8 @@ def status_badge(value: str) -> str:
     labels = {
         "active": "فعال", "pending": "در انتظار استفاده", "used": "استفاده‌شده",
         "expired": "منقضی", "revoked": "لغوشده", "quota_exceeded": "اتمام حجم",
-        "not_started": "شروع‌نشده", "none": "بدون توکن",
+        "ip_mismatch": "IP تغییر کرده — قفل", "identity_mismatch": "سرور تغییر کرده — قفل",
+        "offline": "آفلاین", "not_started": "شروع‌نشده", "none": "بدون توکن",
     }
     cls = "ok" if value in {"active", "used"} else ("warn" if value in {"pending", "not_started"} else "bad")
     return f'<span class="badge {cls}">{esc(labels.get(value, value))}</span>'
