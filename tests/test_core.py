@@ -110,9 +110,18 @@ class PasarGuardGenerationTests(unittest.TestCase):
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: list(hosts)
         adapter.update_core = lambda c, config: core.update({"config": config})
-        adapter.delete_host = lambda host_id: None
+        def delete_host(host_id):
+            hosts[:] = [x for x in hosts if int(x.get("id") or 0) != int(host_id)]
+        adapter.delete_host = delete_host
         created_hosts = []
-        adapter.create_host = lambda host: created_hosts.append(host.copy())
+        next_id = [100]
+        def create_host(host):
+            row = host.copy()
+            row["id"] = next_id[0]
+            next_id[0] += 1
+            hosts.append(row)
+            created_hosts.append(row.copy())
+        adapter.create_host = create_host
         result = adapter.install_locations([
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
