@@ -109,45 +109,215 @@ def _detect_pasarguard_local_url() -> str:
             continue
     return "http://127.0.0.1:8000"
 
-def configure_panel() -> int:
-    detected = detect_panel()
-    print(f"Detected: {detected['name']}")
-    kind = detected.get("type") or "unknown"
+def _yes_no(prompt: str, default: bool = True) -> bool:
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    answer = input(prompt + suffix).strip().lower()
+    if not answer:
+        return default
+    return answer in {"y", "yes"}
+
+
+def _choose_index(prompt: str, rows: list[dict[str, Any]], key: str = "index", default_index: int | None = None) -> dict[str, Any]:
+    if not rows:
+        raise RuntimeError("no_items_available")
+    while True:
+        suffix = f" [{default_index}]" if default_index else ""
+        raw = input(f"{prompt}{suffix}: ").strip()
+        if not raw and default_index:
+            raw = str(default_index)
+        try:
+            n = int(raw)
+        except ValueError:
+            print("[-] Enter a valid list number.")
+            continue
+        for row in rows:
+            if int(row.get(key) or 0) == n:
+                return row
+        print("[-] Selection not found.")
+
+
+def _print_inbounds(kind: str, rows: list[dict[str, Any]]) -> None:
+    print("\nAvailable inbounds:")
+    print("  #   ID/Tag                 Protocol   Port    Listen   Name")
+    print("  --  ---------------------  ---------  ------  -------  ------------------------------")
+    for row in rows:
+        ident = str(row.get("id") or row.get("tag") or "—")
+        name = str(row.get("remark") or row.get("tag") or "")
+        enabled = "" if row.get("enable", True) else " [disabled]"
+        print(
+            f"  {int(row.get('index') or 0):<2}  {ident[:21]:<21}  "
+            f"{str(row.get('protocol') or 'unknown')[:9]:<9}  "
+            f"{str(row.get('port') or '—'):<6}  {str(row.get('listen') or '*')[:7]:<7}  "
+            f"{name[:30]}{enabled}"
+        )
+
+
+def _print_hosts(rows: list[dict[str, Any]], selected_tag: str = "") -> None:
+    print("\nAvailable PasarGuard hosts:")
+    print("  #   ID     Inbound Tag             Port    Remark")
+    print("  --  -----  ----------------------  ------  ------------------------------")
+    for row in rows:
+        marker = "*" if selected_tag and row.get("inbound_tag") == selected_tag else " "
+        print(
+            f"{marker} {int(row.get('index') or 0):<2}  {int(row.get('id') or 0):<5}  "
+            f"{str(row.get('inbound_tag') or '—')[:22]:<22}  "
+            f"{str(row.get('port') if row.get('port') is not None else 'auto'):<6}  "
+            f"{str(row.get('remark') or '')[:30]}"
+        )
+
+
+def _panel_connection_profile(kind: str, detected: bool) -> dict[str, Any]:
     if kind == "sanaei":
-        auto = detect_sanaei_local()
-        profile = dict(auto or {})
-        if not profile:
-            profile = {"type": "sanaei"}
-            profile["url"] = _ask("Panel URL", "http://127.0.0.1:2053")
-            user = _ask("Admin username")
-            password = getpass.getpass("Admin password: ")
-            profile.update({"username": user, "password": password, "verify_tls": False})
-        profile["template_inbound_id"] = int(_ask("Template inbound ID to clone"))
-        profile["base_port"] = int(_ask("First local port", "20000"))
-    elif kind == "pasarguard":
-        profile = {
+        if detected:
+            auto = detect_sanaei_local()
+            if auto and _yes_no("Use automatically detected local 3x-ui API", True):
+                return dict(auto)
+        return {
+            "type": "sanaei",
+            "url": _ask("3x-ui URL", "http://127.0.0.1:2053"),
+            "username": _ask("Admin username"),
+            "password": getpass.getpass("Admin password: "),
+            "verify_tls": _yes_no("Verify panel TLS certificate", False),
+        }
+
+    if kind == "pasarguard":
+        return {
             "type": "pasarguard",
             "url": _ask("PasarGuard URL", _detect_pasarguard_local_url()),
             "username": _ask("Admin username"),
             "password": getpass.getpass("Admin password: "),
             "core_id": int(_ask("Core ID", "1")),
-            "template_inbound_tag": _ask("Template inbound tag to clone"),
-            "template_host_id": int(_ask("Template Host ID (0 = do not clone host)", "0")),
-            "base_port": int(_ask("First local port", "20000")),
-            "verify_tls": False,
+            "verify_tls": _yes_no("Verify panel TLS certificate", False),
         }
-    else:
-        kind = _ask("Panel type (sanaei/pasarguard)").lower()
-        if kind not in {"sanaei", "pasarguard"}:
-            raise RuntimeError("unsupported_panel")
-        print("Panel was not auto-detected; configure after installing the panel.")
-        return 1
+    raise RuntimeError("unsupported_panel")
 
+
+def configure_panel(force_manual: bool = False) -> int:
+    found = detect_panels()
+    print("\nGANJ VPS · Panel Setup")
+    print("────────────────────────────────────────────────────────")
+    if found:
+        for i, item in enumerate(found, 1):
+            ver = f" · {item.get('version')}" if item.get("version") else ""
+            print(f"  [{i}] {item['name']}{ver}  ✓ detected")
+    else:
+        print("  No supported panel was detected automatically.")
+
+    kind = ""
+    detected = False
+    if not force_manual and len(found) == 1:
+        if _yes_no(f"Use detected {found[0]['name']}", True):
+            kind = str(found[0]["type"])
+            detected = True
+    elif not force_manual and len(found) > 1:
+        print("  [M] Manual panel connection")
+        raw = input("Select panel: ").strip().lower()
+        if raw.isdigit() and 1 <= int(raw) <= len(found):
+            kind = str(found[int(raw) - 1]["type"])
+            detected = True
+
+    if not kind:
+        print("\nManual panel selection:")
+        print("  [1] Sanaei 3x-ui")
+        print("  [2] PasarGuard")
+        raw = input("Select panel [1/2]: ").strip()
+        kind = "sanaei" if raw == "1" else "pasarguard" if raw == "2" else ""
+        if not kind:
+            raise RuntimeError("unsupported_panel")
+
+    profile = _panel_connection_profile(kind, detected)
     adapter = adapter_from_profile(profile)
-    result = adapter.status()
+    discovery = adapter.discover()
+    inbounds = discovery.get("inbounds") or []
+    _print_inbounds(kind, inbounds)
+
+    if kind == "sanaei":
+        print("\nChoose the inbound whose protocol/settings must be cloned for GANJ locations.")
+        selected = _choose_index("Inbound list number", inbounds)
+        profile["template_inbound_id"] = int(selected.get("id") or 0)
+        if not profile["template_inbound_id"]:
+            raise RuntimeError("invalid_template_inbound")
+    else:
+        print("\nChoose the inbound tag whose protocol/settings must be cloned for GANJ locations.")
+        selected = _choose_index("Inbound list number", inbounds)
+        profile["template_inbound_tag"] = str(selected.get("tag") or "")
+        if not profile["template_inbound_tag"]:
+            raise RuntimeError("invalid_template_inbound")
+
+        hosts = discovery.get("hosts") or []
+        if hosts:
+            _print_hosts(hosts, profile["template_inbound_tag"])
+            matching = next((x for x in hosts if x.get("inbound_tag") == profile["template_inbound_tag"]), None)
+            default_host = int(matching.get("index")) if matching else None
+            raw = input(
+                f"Host list number to clone (0 = no host){f' [{default_host}]' if default_host else ''}: "
+            ).strip()
+            if not raw and default_host:
+                raw = str(default_host)
+            if raw in {"", "0"}:
+                profile["template_host_id"] = 0
+            else:
+                try:
+                    idx = int(raw)
+                except ValueError as exc:
+                    raise RuntimeError("invalid_host_selection") from exc
+                host = next((x for x in hosts if int(x.get("index") or 0) == idx), None)
+                if not host:
+                    raise RuntimeError("invalid_host_selection")
+                profile["template_host_id"] = int(host.get("id") or 0)
+        else:
+            profile["template_host_id"] = 0
+            print("[!] No PasarGuard hosts were found; only core inbounds will be created.")
+
+        if profile["template_host_id"]:
+            print("\nHost port policy:")
+            print("  [1] Keep the template Host port (recommended for reverse proxy / shared :443)")
+            print("  [2] Set each Host port to its generated inbound port")
+            print("  [3] Leave Host port empty and let PasarGuard resolve it")
+            hp = input("Select [1]: ").strip() or "1"
+            profile["host_port_mode"] = {"1": "template", "2": "inbound", "3": "none"}.get(hp, "template")
+
+    print("\nLocal inbound port allocation:")
+    print("  [1] Automatic collision-free block (recommended)")
+    print("  [2] Start near a custom port and skip collisions")
+    mode = input("Select [1]: ").strip() or "1"
+    if mode == "2":
+        profile["base_port"] = int(_ask("Preferred first local port", "20000"))
+        profile["port_mode"] = "custom"
+    else:
+        profile["base_port"] = 20000
+        profile["port_mode"] = "auto"
+
+    # Verify again using the final profile before persisting credentials.
+    adapter = adapter_from_profile(profile)
+    verified = adapter.status()
     save_json(PANEL_SECRET_FILE, profile, 0o600)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    print("[+] Panel profile verified and stored locally.")
+
+    print("\n[+] Panel connection verified.")
+    print(f"    Type:       {verified.get('type')}")
+    print(f"    Inbounds:   {verified.get('inbounds', 0)}")
+    print(f"    GANJ:       {verified.get('managed_inbounds', 0)} managed inbound(s)")
+    if kind == "pasarguard":
+        print(f"    Hosts:      {verified.get('hosts', 0)}")
+        print(f"    Host clone: {profile.get('template_host_id') or 'disabled'}")
+    print(f"    Port mode:  {profile.get('port_mode')} · base {profile.get('base_port')}")
+
+    if CONFIG_FILE.exists() and SECRET_FILE.exists():
+        try:
+            plan = adapter.plan_locations(central_locations())
+            items = plan.get("items") or []
+            if items:
+                print("\nInstall preview:")
+                for item in items[:8]:
+                    print(
+                        f"    {item.get('country_code')}  local :{item.get('local_port')} "
+                        f"→ gateway :{item.get('gateway_port')}"
+                    )
+                if len(items) > 8:
+                    print(f"    ... +{len(items)-8} more")
+                print(f"    Total: {len(items)} locations")
+        except Exception as exc:
+            print(f"[!] Preview unavailable: {type(exc).__name__}")
     return 0
 
 def panel_status() -> int:
