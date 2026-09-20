@@ -190,7 +190,7 @@ def _pasarguard_location_tag(loc: dict[str, Any]) -> str:
     code = str(loc.get("country_code") or "").upper()
     label = _display_label(loc)
     label = re.sub(r"[,\r\n\t]+", " ", label)
-    label = re.sub(r"\\s+", " ", label).strip()
+    label = re.sub(r"\s+", " ", label).strip()
     return f"{GANJ_IN_PREFIX}{code.lower()} {label}".strip()
 
 
