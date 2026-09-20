@@ -296,6 +296,46 @@ class LocationProbeTests(unittest.TestCase):
             ganj_vps.socket.create_connection = old_create
 
 
+class PasarGuardPublishingTests(unittest.TestCase):
+    def test_template_host_must_belong_to_selected_inbound(self):
+        panel_sync._validate_pasarguard_template_pair(
+            {"tag": "template-a"},
+            {"id": 9, "inbound_tag": "template-a"},
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "pasarguard_template_host_inbound_mismatch"
+        ):
+            panel_sync._validate_pasarguard_template_pair(
+                {"tag": "template-a"},
+                {"id": 9, "inbound_tag": "template-b"},
+            )
+
+    def test_proxy_protocol_local_template_requires_frontend(self):
+        self.assertTrue(panel_sync._template_requires_proxy_frontend({
+            "listen": "127.0.0.1",
+            "streamSettings": {"sockopt": {"acceptProxyProtocol": True}},
+        }))
+        self.assertFalse(panel_sync._template_requires_proxy_frontend({
+            "listen": "0.0.0.0",
+            "streamSettings": {"sockopt": {"acceptProxyProtocol": True}},
+        }))
+
+    def test_haproxy_block_publishes_ports_to_local_xray_with_proxy_protocol(self):
+        block = panel_sync._ganj_haproxy_block(
+            "198.51.100.10", [6001, 6000]
+        )
+        self.assertIn("bind 198.51.100.10:6000", block)
+        self.assertIn("bind 198.51.100.10:6001", block)
+        self.assertIn("server xray 127.0.0.1:6000 send-proxy", block)
+        self.assertIn("server xray 127.0.0.1:6001 send-proxy", block)
+        cleaned = panel_sync._haproxy_without_ganj_block(
+            "global\n\n" + block + "\ndefaults\n"
+        )
+        self.assertNotIn("BEGIN GANJ VPS LOCATION PORTS", cleaned)
+        self.assertIn("global", cleaned)
+        self.assertIn("defaults", cleaned)
+
+
 class InstallerUXTests(unittest.TestCase):
     def test_installer_hides_central_url_and_curl_progress(self):
         installer = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
