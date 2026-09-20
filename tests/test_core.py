@@ -262,8 +262,9 @@ class SanaeiGenerationTests(unittest.TestCase):
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
         ])
-        managed = [x for x in inbounds if str(x.get("remark", "")).startswith("GANJ ")]
+        managed = [x for x in inbounds if panel_sync._country_from_ganj_remark(str(x.get("remark", "")))]
         self.assertEqual([x["port"] for x in managed], [4443, 1443])
+        self.assertEqual([x["remark"] for x in managed], ["🇩🇪 Germany", "🇫🇷 France dc"])
         self.assertEqual(len(result["installed"]), 2)
         tags = {x.get("tag") for x in xray["outbounds"]}
         self.assertIn("ganj-egress-de", tags)
@@ -328,8 +329,8 @@ class SanaeiGenerationTests(unittest.TestCase):
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
         ])
-        de = next(x for x in rows if str(x.get("remark","")).startswith("GANJ DE"))
-        fr = next(x for x in rows if str(x.get("remark","")).startswith("GANJ FR"))
+        de = next(x for x in rows if panel_sync._country_from_ganj_remark(str(x.get("remark",""))) == "DE")
+        fr = next(x for x in rows if panel_sync._country_from_ganj_remark(str(x.get("remark",""))) == "FR")
         self.assertEqual(de["id"], 30)
         self.assertEqual(de["port"], 22100)
         self.assertEqual(fr["port"], 20000)
