@@ -184,6 +184,38 @@ def _display_label(loc: dict[str, Any]) -> str:
     name = str(loc.get("name") or code).strip()
     return f"{flag} {name}".strip()
 
+def _pasarguard_location_tag(loc: dict[str, Any]) -> str:
+    # PasarGuard rejects commas in inbound tags. The ganj-XX prefix is also
+    # the strict ownership boundary so old operator country objects are safe.
+    code = str(loc.get("country_code") or "").upper()
+    label = _display_label(loc)
+    label = re.sub(r"[,\\r\\n\\t]+", " ", label)
+    label = re.sub(r"\\s+", " ", label).strip()
+    return f"{GANJ_IN_PREFIX}{code.lower()} {label}".strip()
+
+
+def _is_ganj_pasarguard_owned_tag(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw.startswith(GANJ_IN_PREFIX):
+        return False
+    code = raw[len(GANJ_IN_PREFIX):len(GANJ_IN_PREFIX) + 2].upper()
+    return code in LOCATION_CATALOG
+
+
+def _clone_pasarguard_host(
+    template_host: dict[str, Any],
+    inbound_tag: str,
+    local_port: int,
+) -> dict[str, Any]:
+    # Exact clone: only database identity + generated inbound/port linkage
+    # are changed. Domain/address, SNI, path, security, transport, status,
+    # fingerprint and every other Host field stay byte-for-byte equivalent.
+    host = copy.deepcopy(template_host)
+    host.pop("id", None)
+    host["inbound_tag"] = str(inbound_tag)
+    host["port"] = int(local_port)
+    return host
+
 
 def _country_from_ganj_remark(value: str) -> str | None:
     raw = str(value or "").strip()
@@ -326,7 +358,7 @@ class PasarGuardAdapter:
             })
         return out
 
-    def update_core(self, core: dict[str, Any], config: dict[str, Any]) -> None:
+    def _put_core(self, core: dict[str, Any], config: dict[str, Any], restart_nodes: bool) -> None:
         body = {
             "name": core.get("name"),
             "type": core.get("type") or "xray",
@@ -336,11 +368,23 @@ class PasarGuardAdapter:
         }
         r = self.s.put(
             f"{self.base}/api/core/{self.core_id}",
-            params={"restart_nodes": "true"},
+            params={"restart_nodes": "true" if restart_nodes else "false"},
             json=body,
             timeout=45,
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            detail = (r.text or "").strip()
+            raise RuntimeError(
+                f"pasarguard_core_update_failed_http_{r.status_code}: {detail[:500]}"
+            )
+
+    def update_core(self, core: dict[str, Any], config: dict[str, Any]) -> None:
+        # Save first without restarting. Restart happens once, after Core and
+        # Host read-back verification succeeds.
+        self._put_core(core, config, restart_nodes=False)
+
+    def restart_core(self, core: dict[str, Any], config: dict[str, Any]) -> None:
+        self._put_core(core, config, restart_nodes=True)
 
     def get_hosts(self) -> list[dict[str, Any]]:
         r = self.s.get(f"{self.base}/api/hosts", timeout=15)
@@ -400,9 +444,9 @@ class PasarGuardAdapter:
         outbounds = cfg.get("outbounds") or []
         rules = (cfg.get("routing") or {}).get("rules") or []
         hosts = self.get_hosts()
-        managed_inbounds = [x for x in inbounds if _is_ganj_pasarguard_tag(str(x.get("tag") or ""))]
+        managed_inbounds = [x for x in inbounds if _is_ganj_pasarguard_owned_tag(str(x.get("tag") or ""))]
         managed_outbounds = [x for x in outbounds if str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
-        managed_hosts = [x for x in hosts if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))]
+        managed_hosts = [x for x in hosts if _is_ganj_pasarguard_owned_tag(str(x.get("inbound_tag") or ""))]
         return {
             "ok": True,
             "type": "pasarguard",
@@ -450,7 +494,7 @@ class PasarGuardAdapter:
         used = {
             int(x.get("port"))
             for x in inbounds
-            if x.get("port") and not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))
+            if x.get("port") and not _is_ganj_pasarguard_owned_tag(str(x.get("tag") or ""))
         }
         assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
@@ -461,7 +505,7 @@ class PasarGuardAdapter:
                 "name": loc["name"],
                 "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
-                "inbound_tag": _display_label(loc),
+                "inbound_tag": _pasarguard_location_tag(loc),
                 "host_clone": bool(template_host),
                 "available": bool(loc.get("available")),
             })
@@ -507,18 +551,18 @@ class PasarGuardAdapter:
             raise RuntimeError("pasarguard_template_host_not_found")
         old_managed_hosts = [
             copy.deepcopy(x) for x in hosts
-            if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))
+            if _is_ganj_pasarguard_owned_tag(str(x.get("inbound_tag") or ""))
         ]
 
         _atomic_backup("pasarguard-core", old_core)
         if old_managed_hosts:
             _atomic_backup("pasarguard-hosts", old_managed_hosts)
 
-        managed_tags = {_display_label(x) for x in locs}
+        managed_tags = {_pasarguard_location_tag(x) for x in locs}
         managed_out = {GANJ_OUT_PREFIX + x["country_code"].lower() for x in locs}
         inbounds[:] = [
             x for x in inbounds
-            if not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))
+            if not _is_ganj_pasarguard_owned_tag(str(x.get("tag") or ""))
         ]
         outbounds[:] = [
             x for x in outbounds
@@ -527,14 +571,14 @@ class PasarGuardAdapter:
         rules[:] = [
             x for x in rules
             if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
+            and not any(_is_ganj_pasarguard_owned_tag(str(t)) for t in (x.get("inboundTag") or []))
         ]
 
         created = []
         for loc in locs:
             code = loc["country_code"]
             local_port = planned_ports[code]
-            in_tag = _display_label(loc)
+            in_tag = _pasarguard_location_tag(loc)
             out_tag = GANJ_OUT_PREFIX + code.lower()
 
             inbound = copy.deepcopy(template)
@@ -564,19 +608,15 @@ class PasarGuardAdapter:
             if template_host:
                 for h in self.get_hosts():
                     tag = str(h.get("inbound_tag") or "")
-                    if _is_ganj_pasarguard_tag(tag) and h.get("id"):
+                    if _is_ganj_pasarguard_owned_tag(tag) and h.get("id"):
                         self.delete_host(int(h["id"]))
 
-                for item, loc in zip(created, locs):
-                    h = copy.deepcopy(template_host)
-                    h.pop("id", None)
-                    h["remark"] = _display_label(loc)
-                    h["inbound_tag"] = item["inbound_tag"]
-                    host_port_mode = str(self.profile.get("host_port_mode") or "template")
-                    if host_port_mode == "inbound":
-                        h["port"] = int(item["local_port"])
-                    elif host_port_mode == "none":
-                        h["port"] = None
+                for item in created:
+                    h = _clone_pasarguard_host(
+                        template_host,
+                        item["inbound_tag"],
+                        int(item["local_port"]),
+                    )
                     self.create_host(h)
 
             # Read-after-write verification catches API success responses that
@@ -592,7 +632,7 @@ class PasarGuardAdapter:
                 verify_hosts = {
                     str(x.get("inbound_tag") or "")
                     for x in self.get_hosts()
-                    if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))
+                    if _is_ganj_pasarguard_owned_tag(str(x.get("inbound_tag") or ""))
                 }
                 if not managed_tags.issubset(verify_hosts):
                     raise RuntimeError("pasarguard_post_install_host_verification_failed")
@@ -606,7 +646,7 @@ class PasarGuardAdapter:
                     self.update_core(old_core, copy.deepcopy(old_core.get("config") or {}))
                 if template_host:
                     for h in self.get_hosts():
-                        if _is_ganj_pasarguard_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
+                        if _is_ganj_pasarguard_owned_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                             self.delete_host(int(h["id"]))
                     for old in old_managed_hosts:
                         h = copy.deepcopy(old)
@@ -625,17 +665,17 @@ class PasarGuardAdapter:
         outbounds = config.setdefault("outbounds", [])
         rules = config.setdefault("routing", {}).setdefault("rules", [])
         before = len(inbounds)
-        inbounds[:] = [x for x in inbounds if not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))]
+        inbounds[:] = [x for x in inbounds if not _is_ganj_pasarguard_owned_tag(str(x.get("tag") or ""))]
         outbounds[:] = [x for x in outbounds if not str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
         rules[:] = [
             x for x in rules
             if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
+            and not any(_is_ganj_pasarguard_owned_tag(str(t)) for t in (x.get("inboundTag") or []))
         ]
         self.update_core(core, config)
         removed_hosts = 0
         for h in self.get_hosts():
-            if _is_ganj_pasarguard_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
+            if _is_ganj_pasarguard_owned_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                 self.delete_host(int(h["id"]))
                 removed_hosts += 1
         return {"ok": True, "removed_inbounds": before - len(inbounds), "removed_hosts": removed_hosts}
@@ -912,7 +952,7 @@ class SanaeiAdapter:
             rules[:] = [
                 x for x in rules
                 if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-                and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
+                and not any(_is_ganj_pasarguard_owned_tag(str(t)) for t in (x.get("inboundTag") or []))
             ]
 
             for item, loc in zip(created, locs):
