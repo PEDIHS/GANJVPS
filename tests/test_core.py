@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -163,6 +164,61 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual([x["local_port"] for x in plan["items"]], [22010, 22011])
 
 
+    def test_pasarguard_host_failure_restores_previous_core_and_hosts(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-rollback-test-"))
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 1, "base_port": 25000,
+            "host_port_mode": "inbound",
+        })
+        adapter.login = lambda: None
+        old_config = {
+            "inbounds": [
+                {"tag": "template", "port": 443, "protocol": "vless", "settings": {}},
+                {"tag": "ganj-de", "port": 25100, "protocol": "vless", "settings": {}},
+            ],
+            "outbounds": [
+                {"tag": "direct", "protocol": "freedom"},
+                {"tag": "ganj-egress-de", "protocol": "socks", "settings": {"servers": [{"address": "10.60.0.1", "port": 1082}]}},
+            ],
+            "routing": {"rules": [{"type": "field", "inboundTag": ["ganj-de"], "outboundTag": "ganj-egress-de"}]},
+        }
+        core = {"name": "main", "type": "xray", "exclude_inbound_tags": [], "fallbacks_inbound_tags": [], "config": copy.deepcopy(old_config)}
+        hosts = [
+            {"id": 1, "remark": "Template", "inbound_tag": "template", "port": 443, "address": ["edge.test"]},
+            {"id": 2, "remark": "GANJ DE · Germany", "inbound_tag": "ganj-de", "port": 25100, "address": ["edge.test"]},
+        ]
+        adapter.get_core = lambda: copy.deepcopy(core)
+        adapter.get_hosts = lambda: copy.deepcopy(hosts)
+        adapter.update_core = lambda c, config: core.update({"config": copy.deepcopy(config)})
+        def delete_host(host_id):
+            hosts[:] = [x for x in hosts if int(x.get("id") or 0) != int(host_id)]
+        adapter.delete_host = delete_host
+        fail_once = [True]
+        next_id = [100]
+        def create_host(host):
+            if fail_once[0] and str(host.get("inbound_tag") or "") == "ganj-de":
+                fail_once[0] = False
+                raise RuntimeError("simulated_host_failure")
+            row = copy.deepcopy(host); row["id"] = next_id[0]; next_id[0] += 1
+            hosts.append(row)
+        adapter.create_host = create_host
+
+        with self.assertRaises(RuntimeError):
+            adapter.install_locations([
+                {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+                {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
+            ])
+
+        self.assertEqual(core["config"], old_config)
+        managed = [x for x in hosts if str(x.get("inbound_tag") or "").startswith("ganj-")]
+        self.assertEqual(len(managed), 1)
+        self.assertEqual(managed[0]["inbound_tag"], "ganj-de")
+        self.assertEqual(managed[0]["port"], 25100)
+
+
 class SanaeiGenerationTests(unittest.TestCase):
     def test_install_generates_country_inbounds_and_routing(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-xui-test-"))
@@ -223,6 +279,46 @@ class SanaeiGenerationTests(unittest.TestCase):
         finally:
             panel_sync.system_listening_ports = old
         self.assertEqual([x["local_port"] for x in plan["items"]], [22100, 22101])
+
+
+    def test_sanaei_resync_updates_existing_country_in_place(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-xui-resync-"))
+        adapter = SanaeiAdapter({
+            "url": "http://127.0.0.1:2053",
+            "username": "test", "password": "test",
+            "template_inbound_id": 9, "base_port": 20000,
+        })
+        adapter.login = lambda: None
+        rows = [
+            {"id": 9, "remark": "template", "port": 443, "protocol": "vless", "listen": "", "enable": True, "settings": {}, "streamSettings": {}, "sniffing": {}},
+            {"id": 30, "remark": "GANJ DE · Germany", "port": 22100, "protocol": "vless", "listen": "", "enable": True, "settings": {}, "streamSettings": {}, "sniffing": {}, "tag": "inbound-30"},
+        ]
+        adapter.list_inbounds = lambda: copy.deepcopy(rows)
+        def update_inbound(iid, payload):
+            row = next(x for x in rows if int(x["id"]) == int(iid))
+            tag = row.get("tag")
+            row.update(copy.deepcopy(payload))
+            if tag: row["tag"] = tag
+        adapter.update_inbound = update_inbound
+        next_id = [31]
+        def add_inbound(payload):
+            row = copy.deepcopy(payload); row["id"] = next_id[0]; row["tag"] = f"inbound-{next_id[0]}"; next_id[0] += 1; rows.append(row)
+        adapter.add_inbound = add_inbound
+        adapter.delete_inbound = lambda iid: rows.__setitem__(slice(None), [x for x in rows if int(x.get("id") or 0) != int(iid)])
+        xray = {"outbounds": [{"tag": "direct", "protocol": "freedom"}], "routing": {"rules": []}}
+        adapter.get_xray = lambda: (copy.deepcopy(xray), "https://example.test/204")
+        adapter.update_xray = lambda cfg, test_url: xray.clear() or xray.update(copy.deepcopy(cfg))
+
+        result = adapter.install_locations([
+            {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+            {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
+        ])
+        de = next(x for x in rows if str(x.get("remark","")).startswith("GANJ DE"))
+        fr = next(x for x in rows if str(x.get("remark","")).startswith("GANJ FR"))
+        self.assertEqual(de["id"], 30)
+        self.assertEqual(de["port"], 22100)
+        self.assertEqual(fr["port"], 20000)
+        self.assertEqual(len(result["installed"]), 2)
 
 
 if __name__ == "__main__":
