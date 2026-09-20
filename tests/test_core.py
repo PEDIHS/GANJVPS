@@ -74,6 +74,164 @@ class WireGuardSelfHealTests(unittest.TestCase):
             ganj_vps.run = old_run
 
 
+
+class GatewayManagerTests(unittest.TestCase):
+    def test_gateway_candidate_normalization_and_ranking(self):
+        old_ping = ganj_vps.ping_latency_ms
+        old_conf = ganj_vps.WG_CONF
+        old_gateways = ganj_vps.GATEWAYS_FILE
+        tmpdir = Path(tempfile.mkdtemp(prefix="ganj-vps-gateway-test-"))
+        try:
+            ganj_vps.WG_CONF = tmpdir / "wg.conf"
+            ganj_vps.WG_CONF.write_text(
+                "[Interface]\nPrivateKey = local\n\n"
+                "[Peer]\nPublicKey = server-key\nEndpoint = current.example:51820\n",
+                encoding="utf-8",
+            )
+            ganj_vps.GATEWAYS_FILE = tmpdir / "gateways.json"
+            ganj_vps.save_json(ganj_vps.GATEWAYS_FILE, {
+                "gateways": [{"id": "local", "name": "Local", "endpoint": "local.example:51820"}],
+            })
+            ganj_vps.ping_latency_ms = lambda host: {
+                "fast.example": 12.0,
+                "slow.example": 55.0,
+                "local.example": 30.0,
+                "current.example": 40.0,
+            }.get(host)
+            desired = {
+                "gateway": {
+                    "candidates": [
+                        {"id": "slow", "endpoint": "slow.example:51820"},
+                        {"id": "fast", "endpoint": "fast.example:51820"},
+                    ]
+                }
+            }
+            ranked = ganj_vps.rank_gateways(desired)
+            self.assertEqual(ranked[0]["id"], "fast")
+            self.assertEqual(ranked[0]["latency_ms"], 12.0)
+            self.assertTrue(any(x["id"] == "local" for x in ranked))
+            self.assertTrue(any(x["id"] == "current" for x in ranked))
+        finally:
+            ganj_vps.ping_latency_ms = old_ping
+            ganj_vps.WG_CONF = old_conf
+            ganj_vps.GATEWAYS_FILE = old_gateways
+
+    def test_gateway_switch_rewrites_endpoint_and_rolls_back_on_failure(self):
+        old_conf = ganj_vps.WG_CONF
+        old_state = ganj_vps.STATE_FILE
+        old_run = ganj_vps.run
+        old_ping_ok = ganj_vps.gateway_ping_ok
+        old_latency = ganj_vps.ping_latency_ms
+        tmpdir = Path(tempfile.mkdtemp(prefix="ganj-vps-switch-test-"))
+        config = (
+            "[Interface]\nAddress = 10.60.0.2/32\nPrivateKey = local\n\n"
+            "[Peer]\nPublicKey = server-key\nEndpoint = old.example:51820\n"
+            "AllowedIPs = 10.60.0.0/16\n"
+        )
+        try:
+            ganj_vps.WG_CONF = tmpdir / "wg.conf"
+            ganj_vps.STATE_FILE = tmpdir / "state.json"
+            ganj_vps.WG_CONF.write_text(config, encoding="utf-8")
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            ganj_vps.run = lambda *args, **kwargs: Result()
+            ganj_vps.gateway_ping_ok = lambda: True
+            ganj_vps.ping_latency_ms = lambda host: 9.0
+            self.assertTrue(ganj_vps.switch_gateway({
+                "id": "new", "name": "New", "endpoint": "new.example:51820",
+            }))
+            self.assertIn("Endpoint = new.example:51820", ganj_vps.WG_CONF.read_text())
+            self.assertEqual(ganj_vps.load_json(ganj_vps.STATE_FILE, {})["active_gateway"]["id"], "new")
+
+            ganj_vps.WG_CONF.write_text(config, encoding="utf-8")
+            ganj_vps.gateway_ping_ok = lambda: False
+            with self.assertRaisesRegex(RuntimeError, "gateway_switch_verification_failed"):
+                ganj_vps.switch_gateway({
+                    "id": "bad", "name": "Bad", "endpoint": "bad.example:51820",
+                })
+            self.assertEqual(ganj_vps.WG_CONF.read_text(), config)
+        finally:
+            ganj_vps.WG_CONF = old_conf
+            ganj_vps.STATE_FILE = old_state
+            ganj_vps.run = old_run
+            ganj_vps.gateway_ping_ok = old_ping_ok
+            ganj_vps.ping_latency_ms = old_latency
+
+    def test_connection_counter_uses_local_endpoint_only(self):
+        old_run = ganj_vps.run
+        class Result:
+            returncode = 0
+            stdout = (
+                "0 0 127.0.0.1:6000 198.51.100.1:50000\n"
+                "0 0 127.0.0.1:5000 198.51.100.2:6000\n"
+            )
+            stderr = ""
+        try:
+            ganj_vps.run = lambda *args, **kwargs: Result()
+            counts = ganj_vps.established_connections_by_port({6000})
+            self.assertEqual(counts[6000], 1)
+        finally:
+            ganj_vps.run = old_run
+
+    def test_location_signature_changes_when_placeholder_becomes_ready(self):
+        desired_a = {"gateway": {"locations": []}}
+        desired_b = {"gateway": {"locations": [
+            {"country_code": "DE", "port": 1082, "enabled": True},
+        ]}}
+        sig_a = ganj_vps.locations_signature(ganj_vps.locations_from_desired(desired_a))
+        sig_b = ganj_vps.locations_signature(ganj_vps.locations_from_desired(desired_b))
+        self.assertNotEqual(sig_a, sig_b)
+
+    def test_reconcile_installs_only_when_location_state_changes(self):
+        old_panel_file = ganj_vps.PANEL_SECRET_FILE
+        old_state = ganj_vps.STATE_FILE
+        old_choose = ganj_vps.choose_best_gateway
+        old_ping = ganj_vps.gateway_ping_ok
+        old_panel_profile = ganj_vps.panel_profile
+        old_adapter_factory = ganj_vps.adapter_from_profile
+        tmpdir = Path(tempfile.mkdtemp(prefix="ganj-vps-reconcile-test-"))
+        calls = []
+        class FakeAdapter:
+            def install_locations(self, rows):
+                calls.append(ganj_vps.locations_signature(rows))
+                return {"installed": rows}
+            def status(self):
+                return {"managed_inbounds": 30, "type": "sanaei"}
+        try:
+            ganj_vps.PANEL_SECRET_FILE = tmpdir / "panel.json"
+            ganj_vps.PANEL_SECRET_FILE.write_text("{}", encoding="utf-8")
+            ganj_vps.STATE_FILE = tmpdir / "state.json"
+            ganj_vps.choose_best_gateway = lambda desired, force=False: {"id": "gw"}
+            ganj_vps.gateway_ping_ok = lambda: True
+            ganj_vps.panel_profile = lambda: {"type": "sanaei"}
+            ganj_vps.adapter_from_profile = lambda profile: FakeAdapter()
+            desired = {"revision": 1, "gateway": {"locations": []}}
+            first = ganj_vps.reconcile_desired(desired)
+            second = ganj_vps.reconcile_desired(desired)
+            self.assertTrue(first["locations_changed"])
+            self.assertFalse(second["locations_changed"])
+            self.assertEqual(len(calls), 1)
+
+            desired["revision"] = 2
+            desired["gateway"]["locations"] = [{"country_code": "DE", "port": 1082, "enabled": True}]
+            third = ganj_vps.reconcile_desired(desired)
+            self.assertTrue(third["locations_changed"])
+            self.assertEqual(len(calls), 2)
+        finally:
+            ganj_vps.PANEL_SECRET_FILE = old_panel_file
+            ganj_vps.STATE_FILE = old_state
+            ganj_vps.choose_best_gateway = old_choose
+            ganj_vps.gateway_ping_ok = old_ping
+            ganj_vps.panel_profile = old_panel_profile
+            ganj_vps.adapter_from_profile = old_adapter_factory
+
+    def test_semver_comparison(self):
+        self.assertGreater(ganj_vps._version_tuple("0.4.0"), ganj_vps._version_tuple("0.3.9"))
+        self.assertEqual(ganj_vps._version_tuple("v1.2.3"), (1, 2, 3))
+
+
 class LocationTests(unittest.TestCase):
     def test_top_locations_are_unique_and_curated(self):
         self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 30)
