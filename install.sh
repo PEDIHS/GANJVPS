@@ -92,7 +92,7 @@ if [[ "$SKIP_ENROLL" == "1" ]]; then
   if [[ "$DEFER_RESTART" != "1" ]]; then
     systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
   fi
-  say "${c_green}[+] GANJ VPS files updated.${c_reset}"
+  ok "GANJ VPS files updated"
   exit 0
 fi
 
@@ -112,7 +112,7 @@ if [[ -n "$ENROLL_TOKEN" ]]; then
     ok "Server registered and secure agent started"
 
     if [[ -r /dev/tty ]]; then
-      step "Configuring detected panel automatically"
+      step "Connecting to detected panel"
       if /usr/local/bin/ganj-vps panel-configure --auto </dev/tty >/dev/tty 2>/dev/tty; then
         ok "Panel connection verified"
         step "Creating and synchronizing GANJ locations"
@@ -122,7 +122,7 @@ if [[ -n "$ENROLL_TOKEN" ]]; then
           warn "Panel is configured, but location sync needs attention. Run: ganj-vps locations-install"
         fi
       else
-        warn "Automatic panel setup was not completed. Run: ganj-vps panel-configure"
+        warn "Panel setup was not completed. Run: ganj-vps panel-configure"
       fi
     fi
   else
