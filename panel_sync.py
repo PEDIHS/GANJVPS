@@ -206,14 +206,17 @@ def _clone_pasarguard_host(
     template_host: dict[str, Any],
     inbound_tag: str,
     local_port: int,
+    remark: str,
 ) -> dict[str, Any]:
-    # Exact clone: only database identity + generated inbound/port linkage
-    # are changed. Domain/address, SNI, path, security, transport, status,
-    # fingerprint and every other Host field stay byte-for-byte equivalent.
+    # Clone the selected Host. Only database identity, generated
+    # inbound/port linkage and the user-facing location name change.
+    # Domain/address, SNI, path, security, transport, status, fingerprint
+    # and every other Host field stay equivalent to the selected template.
     host = copy.deepcopy(template_host)
     host.pop("id", None)
     host["inbound_tag"] = str(inbound_tag)
     host["port"] = int(local_port)
+    host["remark"] = str(remark)
     return host
 
 
@@ -647,11 +650,12 @@ class PasarGuardAdapter:
                     if _is_ganj_pasarguard_owned_tag(tag) and h.get("id"):
                         self.delete_host(int(h["id"]))
 
-                for item in created:
+                for item, loc in zip(created, locs):
                     h = _clone_pasarguard_host(
                         template_host,
                         item["inbound_tag"],
                         int(item["local_port"]),
+                        _display_label(loc),
                     )
                     self.create_host(h)
 
