@@ -1,6 +1,6 @@
 # GANJ VPS
 
-GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.3.0**.
+GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.3.1**.
 
 It is designed for servers running supported Xray panels such as Sanaei 3x-ui and PasarGuard, and connects them to a GANJ central gateway through a managed WireGuard control/data plane.
 
@@ -12,7 +12,8 @@ It is designed for servers running supported Xray panels such as Sanaei 3x-ui an
 - Per-node credentials; no shared master secret
 - WireGuard peer provisioning
 - 30 curated gateway locations with stable ports
-- Central health, heartbeat, desired-state and failover control
+- Central health, heartbeat and desired-state control
+- WireGuard DNS endpoint refresh and local tunnel self-heal
 - Interactive core/inbound selection for Sanaei 3x-ui and PasarGuard\n- Collision-aware automatic local port allocation\n- Automatic PasarGuard Host cloning with selectable port policy
 - Safe GANJ-owned location generation with backups and isolated tags
 - One-time enrollment tokens with license duration and optional traffic quota

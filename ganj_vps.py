@@ -24,7 +24,7 @@ import requests
 from panel_sync import LOCATION_CATALOG, adapter_from_profile, detect_sanaei_local
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -40,6 +40,7 @@ STATE_FILE = STATE_DIR / "state.json"
 DEFAULT_CENTRAL = "https://turkey.ufo-tuning.ir/ganj-agent"
 HEARTBEAT_INTERVAL = 15
 HTTP_TIMEOUT = 15
+WIREGUARD_REPAIR_INTERVAL = 60
 
 TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
@@ -648,6 +649,103 @@ class CentralClient:
         r = self.session.post(self.url(f"/v1/commands/{int(command_id)}/result"), json=payload, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
 
+def _parse_wireguard_peer_config(text: str) -> dict[str, str]:
+    section = ""
+    peer: dict[str, str] = {}
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if section != "peer" or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if key.lower() == "publickey":
+            peer["public_key"] = value
+        elif key.lower() == "endpoint":
+            peer["endpoint"] = value
+    return peer
+
+
+def _split_wireguard_endpoint(endpoint: str) -> tuple[str, str] | None:
+    raw = str(endpoint or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end <= 1 or end + 2 > len(raw) or raw[end + 1] != ":":
+            return None
+        return raw[1:end], raw[end + 2:]
+    if ":" not in raw:
+        return None
+    host, port = raw.rsplit(":", 1)
+    return (host.strip(), port.strip()) if host.strip() and port.strip() else None
+
+
+def _is_ipv4_literal(host: str) -> bool:
+    try:
+        socket.inet_aton(str(host))
+        return str(host).count(".") == 3
+    except OSError:
+        return False
+
+
+def refresh_wireguard_endpoint_dns(force: bool = False) -> bool:
+    if not WG_CONF.exists() or not shutil.which("wg"):
+        return False
+    try:
+        peer = _parse_wireguard_peer_config(WG_CONF.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    public_key = peer.get("public_key") or ""
+    endpoint = _split_wireguard_endpoint(peer.get("endpoint") or "")
+    if not public_key or not endpoint:
+        return False
+    host, port = endpoint
+    if _is_ipv4_literal(host):
+        return False
+    try:
+        resolved = socket.gethostbyname(host)
+    except OSError:
+        return False
+
+    live_ip = ""
+    p = run(["wg", "show", "ganj-vps", "endpoints"], timeout=5)
+    if p.returncode == 0:
+        for row in p.stdout.splitlines():
+            parts = row.split()
+            if len(parts) < 2 or parts[0] != public_key:
+                continue
+            live = _split_wireguard_endpoint(parts[1])
+            if live:
+                live_ip = live[0]
+            break
+    if not force and live_ip == resolved:
+        return False
+
+    update = run(
+        ["wg", "set", "ganj-vps", "peer", public_key, "endpoint", f"{host}:{port}"],
+        timeout=8,
+    )
+    if update.returncode != 0:
+        restart = run(["systemctl", "restart", "wg-quick@ganj-vps"], timeout=20)
+        return restart.returncode == 0
+    return True
+
+
+def ensure_wireguard_healthy() -> bool:
+    refresh_wireguard_endpoint_dns()
+    if gateway_tunnel_ok():
+        return True
+    restart = run(["systemctl", "restart", "wg-quick@ganj-vps"], timeout=20)
+    if restart.returncode != 0:
+        return False
+    time.sleep(1)
+    return gateway_tunnel_ok()
+
+
 def wg_status() -> dict[str, Any]:
     if not shutil.which("wg"):
         return {"installed": False, "up": False}
@@ -726,6 +824,7 @@ def heartbeat_payload() -> dict[str, Any]:
         "wireguard": {**wg_status(), "gateway_reachable": gateway_tunnel_ok()},
         "capabilities": {
             "wireguard": bool(shutil.which("wg")),
+            "wireguard_self_heal": True,
             "panel_sanaei": panel["type"] == "sanaei",
             "panel_pasarguard": panel["type"] == "pasarguard",
             "locations": TOP_LOCATIONS,
@@ -847,8 +946,13 @@ def agent_loop() -> None:
     cfg = AgentConfig.load()
     client = CentralClient(cfg)
     failures = 0
+    last_wg_repair = 0.0
     while True:
         try:
+            now = time.monotonic()
+            if now - last_wg_repair >= WIREGUARD_REPAIR_INTERVAL:
+                ensure_wireguard_healthy()
+                last_wg_repair = now
             hb = client.heartbeat(heartbeat_payload())
             desired = client.desired()
             state = load_json(STATE_FILE, {})

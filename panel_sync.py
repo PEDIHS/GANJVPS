@@ -68,6 +68,19 @@ DISPLAY_LABELS = {
     for code, meta in LOCATION_CATALOG.items()
 }
 
+# Exact legacy labels accepted only for migration. Do not classify every
+# flag-prefixed user object as GANJ-owned: operators may have unrelated
+# inbounds/hosts such as "🇩🇪 Personal".
+LEGACY_DISPLAY_LABELS = {
+    code: {
+        f"{meta['flag']} {meta['country']}",
+        f"GANJ {code} · {meta['country']}",
+    }
+    for code, meta in LOCATION_CATALOG.items()
+}
+LEGACY_DISPLAY_LABELS["FR"].add("🇫🇷 France dc")
+LEGACY_DISPLAY_LABELS["NL"].add("🇳🇱 The Netherlands")
+
 
 def _atomic_backup(name: str, data: Any) -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -176,17 +189,11 @@ def _country_from_ganj_remark(value: str) -> str | None:
     raw = str(value or "").strip()
     m = re.match(r"^GANJ\s+([A-Za-z]{2})(?:\s|·|$)", raw)
     if m:
-        return m.group(1).upper()
+        code = m.group(1).upper()
+        return code if code in LOCATION_CATALOG else None
     for code, label in DISPLAY_LABELS.items():
-        if raw == label:
+        if raw == label or raw in LEGACY_DISPLAY_LABELS.get(code, set()):
             return code
-    # Human-facing names begin with a Unicode flag. Decode the two
-    # regional-indicator symbols back to an ISO alpha-2 country code.
-    if len(raw) >= 2:
-        a, b = ord(raw[0]), ord(raw[1])
-        base = 0x1F1E6
-        if base <= a <= base + 25 and base <= b <= base + 25:
-            return chr(ord("A") + a - base) + chr(ord("A") + b - base)
     return None
 
 

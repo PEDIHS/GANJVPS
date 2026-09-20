@@ -19,6 +19,61 @@ def without_live_ports(fn):
     return wrapped
 
 
+class WireGuardSelfHealTests(unittest.TestCase):
+    def test_parse_peer_config_and_endpoint(self):
+        peer = ganj_vps._parse_wireguard_peer_config(
+            "[Interface]\nPrivateKey = local\n\n"
+            "[Peer]\nPublicKey = server-key\n"
+            "Endpoint = gateway.example.test:51820\n"
+        )
+        self.assertEqual(peer["public_key"], "server-key")
+        self.assertEqual(peer["endpoint"], "gateway.example.test:51820")
+        self.assertEqual(
+            ganj_vps._split_wireguard_endpoint(peer["endpoint"]),
+            ("gateway.example.test", "51820"),
+        )
+        self.assertEqual(
+            ganj_vps._split_wireguard_endpoint("[2001:db8::1]:51820"),
+            ("2001:db8::1", "51820"),
+        )
+
+    def test_endpoint_refresh_updates_stale_dns_target(self):
+        old_conf = ganj_vps.WG_CONF
+        old_which = ganj_vps.shutil.which
+        old_host = ganj_vps.socket.gethostbyname
+        old_run = ganj_vps.run
+        tmp = Path(tempfile.mkdtemp(prefix="ganj-vps-wg-test-")) / "ganj-vps.conf"
+        tmp.write_text(
+            "[Interface]\nPrivateKey = local\n\n"
+            "[Peer]\nPublicKey = server-key\n"
+            "Endpoint = gateway.example.test:51820\n",
+            encoding="utf-8",
+        )
+        calls = []
+        def fake_run(cmd, timeout=20, check=False):
+            calls.append(cmd)
+            class Result:
+                returncode = 0
+                stdout = "server-key 198.51.100.10:51820\n" if cmd[:4] == ["wg", "show", "ganj-vps", "endpoints"] else ""
+                stderr = ""
+            return Result()
+        try:
+            ganj_vps.WG_CONF = tmp
+            ganj_vps.shutil.which = lambda name: "/usr/bin/wg" if name == "wg" else old_which(name)
+            ganj_vps.socket.gethostbyname = lambda host: "198.51.100.20"
+            ganj_vps.run = fake_run
+            self.assertTrue(ganj_vps.refresh_wireguard_endpoint_dns())
+            self.assertIn(
+                ["wg", "set", "ganj-vps", "peer", "server-key", "endpoint", "gateway.example.test:51820"],
+                calls,
+            )
+        finally:
+            ganj_vps.WG_CONF = old_conf
+            ganj_vps.shutil.which = old_which
+            ganj_vps.socket.gethostbyname = old_host
+            ganj_vps.run = old_run
+
+
 class LocationTests(unittest.TestCase):
     def test_top_locations_are_unique_and_curated(self):
         self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 30)
@@ -57,6 +112,12 @@ class LocationTests(unittest.TestCase):
 
 
 class PasarGuardGenerationTests(unittest.TestCase):
+    def test_unrelated_flag_prefixed_objects_are_not_ganj_owned(self):
+        self.assertIsNone(panel_sync._country_from_ganj_remark("🇩🇪 Personal"))
+        self.assertIsNone(panel_sync._country_from_pasarguard_tag("🇩🇪 Personal"))
+        self.assertEqual(panel_sync._country_from_ganj_remark("🇩🇪 Germany — Berlin"), "DE")
+        self.assertEqual(panel_sync._country_from_pasarguard_tag("ganj-de"), "DE")
+
     @without_live_ports
     def test_install_generates_only_ganj_owned_objects(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-test-"))
@@ -396,6 +457,23 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany — Berlin")
         self.assertEqual(panel_sync.DISPLAY_LABELS["US"], "🇺🇸 United States — Washington, D.C.")
         self.assertEqual(panel_sync.DISPLAY_LABELS["GB"], "🇬🇧 United Kingdom — London")
+
+    def test_sanaei_does_not_claim_unrelated_flag_remark(self):
+        adapter = SanaeiAdapter({
+            "url": "http://127.0.0.1:2053",
+            "username": "test", "password": "test",
+            "template_inbound_id": 9, "base_port": 6000,
+        })
+        adapter.login = lambda: None
+        adapter.list_inbounds = lambda: [
+            {"id": 9, "remark": "template", "port": 443, "protocol": "vless"},
+            {"id": 10, "remark": "🇩🇪 Personal", "port": 6500, "protocol": "vless"},
+            {"id": 11, "remark": "🇩🇪 Germany — Berlin", "port": 6000, "protocol": "vless"},
+        ]
+        adapter.get_xray = lambda: ({"outbounds": [], "routing": {"rules": []}}, "https://example.test/204")
+        status = adapter.managed_status()
+        self.assertEqual(status["managed_inbounds"], 1)
+        self.assertEqual(status["managed_ports"], [6000])
 
     def test_non_vless_template_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "template_protocol_must_be_vless"):
