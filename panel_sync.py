@@ -599,7 +599,7 @@ class PasarGuardAdapter:
                     self.update_core(old_core, copy.deepcopy(old_core.get("config") or {}))
                 if template_host:
                     for h in self.get_hosts():
-                        if str(h.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX) and h.get("id"):
+                        if _is_ganj_pasarguard_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                             self.delete_host(int(h["id"]))
                     for old in old_managed_hosts:
                         h = copy.deepcopy(old)
@@ -628,7 +628,7 @@ class PasarGuardAdapter:
         self.update_core(core, config)
         removed_hosts = 0
         for h in self.get_hosts():
-            if str(h.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX) and h.get("id"):
+            if _is_ganj_pasarguard_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                 self.delete_host(int(h["id"]))
                 removed_hosts += 1
         return {"ok": True, "removed_inbounds": before - len(inbounds), "removed_hosts": removed_hosts}
