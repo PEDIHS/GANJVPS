@@ -1,0 +1,132 @@
+--- a/app/pool_manager.py
++++ b/app/pool_manager.py
+@@ -80,7 +80,8 @@
+             current_valid = bool(
+                 current and current_src and current_src.active_test_allowed
+                 and current.country_code == loc.country_code
+-                and current.health_status == 'healthy'
++                and current.health_status in {'healthy', 'suspect'}
++                and int(current.consecutive_failures or 0) < 3
+             )
+ 
+             chosen = current if current_valid else None
+--- a/app/gateway_runtime.py
++++ b/app/gateway_runtime.py
+@@ -22,6 +22,7 @@
+ STATUS = Path("/var/lib/panel-gateway/runtime-status.json")
+ XRAY = "/usr/local/bin/xray"
+ POLL = 2
++APPLY_STABLE_SECONDS = 6
+ child = None
+ last_fp = None
+ last_mapping = []
+@@ -58,7 +59,13 @@
+             src = db.get(TelegramSource, cfg.source_id) if cfg and cfg.source_id else None
+             if not cfg or not src or not src.active_test_allowed:
+                 continue
+-            if cfg.health_status != "healthy":
++            # Keep a currently selected route through transient health
++            # failures. Health Probe promotes it to dead after 3 consecutive
++            # failures; a single suspect result must not tear down the whole
++            # multi-location Xray runtime.
++            if cfg.health_status not in {"healthy", "suspect"}:
++                continue
++            if cfg.health_status == "suspect" and int(cfg.consecutive_failures or 0) >= 3:
+                 continue
+             raw = decrypt_text(cfg.raw_enc)
+             locations.append({
+@@ -75,8 +82,25 @@
+                 "iran_latency_ms": cfg.iran_latency_ms,
+                 "quality": pool.current_quality,
+             })
++
++    # Runtime identity must contain only fields that change the actual Xray
++    # configuration. Telemetry such as latency/quality changes continuously
++    # and previously caused a full Xray restart on nearly every health check.
++    fp_rows = []
++    for row in mapping:
++        code = str(row["country_code"]).upper()
++        raw = active.get(code, "")
++        fp_rows.append({
++            "country_code": code,
++            "port": int(row["port"]),
++            # Config identity is the decrypted runtime payload, not the DB row
++            # id. Duplicate public configs can exist under multiple source
++            # records; switching between identical payloads must not restart
++            # Xray.
++            "config_hash": hashlib.sha256(raw.encode()).hexdigest(),
++        })
+     fp = hashlib.sha256(
+-        json.dumps(mapping, sort_keys=True, separators=(",", ":")).encode()
++        json.dumps(fp_rows, sort_keys=True, separators=(",", ":")).encode()
+     ).hexdigest()
+     return locations, active, mapping, fp
+ 
+@@ -162,21 +186,51 @@
+     signal.signal(signal.SIGTERM, handle_stop)
+     signal.signal(signal.SIGINT, handle_stop)
+     write_status("idle")
++    pending_fp = None
++    pending_since = 0.0
+     try:
+         while not stopping:
+             try:
+                 locations, active, mapping, fp = desired_state()
++                child_alive = child is not None and child.poll() is None
++
+                 if not mapping:
+-                    if child is not None:
++                    pending_fp = None
++                    pending_since = 0.0
++                    if child_alive:
+                         stop_child()
+                     if fp != last_fp:
+                         write_status("idle", [])
+                         last_mapping = []
+                         last_fp = fp
+-                elif fp != last_fp or child is None or child.poll() is not None:
++
++                elif not child_alive:
++                    # No runtime exists: recover immediately.
+                     applied = apply(locations, active, mapping)
+                     if applied:
+                         last_fp = fp
++                        pending_fp = None
++                        pending_since = 0.0
++
++                elif fp == last_fp:
++                    # Telemetry/config-id metadata may change even when the
++                    # actual Xray config is identical. Refresh status only.
++                    pending_fp = None
++                    pending_since = 0.0
++                    last_mapping = list(mapping)
++                    write_status("running", mapping, pid=child.pid)
++
++                else:
++                    now = time.monotonic()
++                    if pending_fp != fp:
++                        pending_fp = fp
++                        pending_since = now
++                    elif now - pending_since >= APPLY_STABLE_SECONDS:
++                        applied = apply(locations, active, mapping)
++                        if applied:
++                            last_fp = fp
++                            pending_fp = None
++                            pending_since = 0.0
+             except Exception as e:
+                 write_status("error", error=type(e).__name__)
+             for _ in range(POLL):
+--- a/app/health_probe.py
++++ b/app/health_probe.py
+@@ -114,8 +114,10 @@
+ 
+ async def geo_country(ip: str) -> str | None:
+     try:
++        parsed = ipaddress.ip_address(ip)
++        binary = "/usr/bin/geoiplookup6" if parsed.version == 6 else "/usr/bin/geoiplookup"
+         proc = await asyncio.create_subprocess_exec(
+-            "/usr/bin/geoiplookup", ip,
++            binary, ip,
+             stdout=asyncio.subprocess.PIPE,
+             stderr=asyncio.subprocess.DEVNULL,
+         )

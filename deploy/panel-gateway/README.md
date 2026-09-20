@@ -48,3 +48,16 @@ Production smoke checks performed after deployment:
 
 Do not store raw enrollment tokens in source control. They are shown once to the
 operator and only their hash is retained by the production database.
+
+## WireGuard SOCKS firewall
+
+Production SOCKS listeners bind to `10.60.0.1` and are intentionally reachable
+only through the WireGuard interface. Run:
+
+```bash
+sudo deploy/panel-gateway/sync-wg-firewall.sh
+```
+
+The script persists UFW rules for TCP/UDP `1080:1238` on `wg0` only. This
+fixes the failure mode where only the original Germany port `1082` was
+allowed and every other location timed out from representative nodes.

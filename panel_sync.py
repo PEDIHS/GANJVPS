@@ -220,6 +220,163 @@ def _clone_pasarguard_host(
     return host
 
 
+def _validate_pasarguard_template_pair(
+    template_inbound: dict[str, Any],
+    template_host: dict[str, Any] | None,
+) -> None:
+    if not template_host:
+        return
+    inbound_tag = str(template_inbound.get("tag") or "")
+    host_tag = str(template_host.get("inbound_tag") or "")
+    if host_tag and host_tag != inbound_tag:
+        raise RuntimeError(
+            "pasarguard_template_host_inbound_mismatch:"
+            f"host={host_tag}:inbound={inbound_tag}"
+        )
+
+
+def _template_requires_proxy_frontend(template: dict[str, Any]) -> bool:
+    listen = str(template.get("listen") or "").strip().lower()
+    sockopt = ((template.get("streamSettings") or {}).get("sockopt") or {})
+    return (
+        listen in {"127.0.0.1", "localhost", "::1"}
+        and bool(sockopt.get("acceptProxyProtocol"))
+    )
+
+
+def _primary_bind_ipv4() -> str:
+    try:
+        p = subprocess.run(
+            ["ip", "-4", "route", "get", "1.1.1.1"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+        m = re.search(r"\bsrc\s+(\d+\.\d+\.\d+\.\d+)\b", p.stdout)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    raise RuntimeError("ganj_public_bind_ipv4_not_detected")
+
+
+_HAPROXY_BEGIN = "# BEGIN GANJ VPS LOCATION PORTS"
+_HAPROXY_END = "# END GANJ VPS LOCATION PORTS"
+
+
+def _haproxy_without_ganj_block(text: str) -> str:
+    if _HAPROXY_BEGIN not in text:
+        return text.rstrip() + "\n"
+    if _HAPROXY_END not in text:
+        raise RuntimeError("ganj_haproxy_marker_corrupt")
+    start = text.index(_HAPROXY_BEGIN)
+    end = text.index(_HAPROXY_END, start) + len(_HAPROXY_END)
+    return (text[:start].rstrip() + "\n\n" + text[end:].lstrip()).rstrip() + "\n"
+
+
+def _ganj_haproxy_block(bind_ip: str, ports: list[int]) -> str:
+    lines = [_HAPROXY_BEGIN]
+    for port in sorted({int(x) for x in ports}):
+        lines.extend([
+            f"frontend ft_ganj_{port}",
+            "    mode tcp",
+            f"    bind {bind_ip}:{port}",
+            f"    default_backend be_ganj_{port}",
+            "",
+            f"backend be_ganj_{port}",
+            "    mode tcp",
+            f"    server xray 127.0.0.1:{port} send-proxy",
+            "",
+        ])
+    lines.append(_HAPROXY_END)
+    return "\n".join(lines) + "\n"
+
+
+def _sync_pasarguard_haproxy_ports(
+    template: dict[str, Any],
+    ports: list[int],
+) -> dict[str, Any]:
+    cfg = Path(os.environ.get("GANJ_HAPROXY_CONFIG", "/etc/haproxy/haproxy.cfg"))
+    if not _template_requires_proxy_frontend(template):
+        return {"managed": False, "ports": []}
+
+    if not cfg.exists():
+        raise RuntimeError("pasarguard_proxy_protocol_requires_haproxy_config")
+    if not Path("/usr/sbin/haproxy").exists() and not Path("/usr/local/sbin/haproxy").exists():
+        raise RuntimeError("pasarguard_proxy_protocol_requires_haproxy")
+
+    current = cfg.read_text(encoding="utf-8")
+    base = _haproxy_without_ganj_block(current)
+    desired_ports = sorted({int(x) for x in ports})
+    bind_ip = _primary_bind_ipv4()
+    desired = base
+    if desired_ports:
+        desired = base.rstrip() + "\n\n" + _ganj_haproxy_block(bind_ip, desired_ports)
+
+    if desired == current:
+        return {"managed": True, "ports": desired_ports, "bind_ip": bind_ip}
+
+    candidate = cfg.with_name(cfg.name + ".ganj-candidate")
+    candidate.write_text(desired, encoding="utf-8")
+    try:
+        check = subprocess.run(
+            ["haproxy", "-c", "-f", str(candidate)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if check.returncode != 0:
+            raise RuntimeError(
+                "ganj_haproxy_validation_failed:" +
+                (check.stderr or check.stdout)[-500:].replace("\n", " ")
+            )
+
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        backup = BACKUP_DIR / f"haproxy-{time.strftime('%Y%m%d-%H%M%S')}.cfg"
+        backup.write_text(current, encoding="utf-8")
+        os.chmod(backup, 0o600)
+
+        cfg.write_text(desired, encoding="utf-8")
+        reload_result = subprocess.run(
+            ["systemctl", "reload", "haproxy"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if reload_result.returncode != 0:
+            cfg.write_text(current, encoding="utf-8")
+            subprocess.run(
+                ["systemctl", "reload", "haproxy"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            raise RuntimeError(
+                "ganj_haproxy_reload_failed:" +
+                (reload_result.stderr or reload_result.stdout)[-500:].replace("\n", " ")
+            )
+    finally:
+        candidate.unlink(missing_ok=True)
+
+    if desired_ports:
+        deadline = time.time() + 10
+        missing = set(desired_ports)
+        while time.time() < deadline:
+            live = system_listening_ports()
+            missing = set(desired_ports) - live
+            if not missing:
+                break
+            time.sleep(0.5)
+        if missing:
+            raise RuntimeError(
+                "ganj_haproxy_public_ports_not_listening:" +
+                ",".join(str(x) for x in sorted(missing))
+            )
+
+    return {"managed": True, "ports": desired_ports, "bind_ip": bind_ip}
+
+
 def _country_from_ganj_remark(value: str) -> str | None:
     raw = str(value or "").strip()
     m = re.match(r"^GANJ\s+([A-Za-z]{2})(?:\s|·|$)", raw)
@@ -524,6 +681,8 @@ class PasarGuardAdapter:
         template_host = next((x for x in hosts if int(x.get("id") or 0) == self.template_host_id), None)
         if self.template_host_id and not template_host:
             raise RuntimeError("pasarguard_template_host_not_found")
+        _validate_pasarguard_template_pair(template, template_host)
+        _validate_pasarguard_template_pair(template, template_host)
         existing_by_country: dict[str, int] = {}
         for row in inbounds:
             tag = str(row.get("tag") or "")
@@ -703,7 +862,17 @@ class PasarGuardAdapter:
                         ",".join(str(x) for x in missing)
                     )
 
-            return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
+            proxy_publish = _sync_pasarguard_haproxy_ports(
+                template,
+                [int(x["local_port"]) for x in created],
+            )
+
+            return {
+                "ok": True,
+                "installed": created,
+                "backup": str(BACKUP_DIR),
+                "proxy_publish": proxy_publish,
+            }
 
         except Exception:
             # Roll back both the core document and only GANJ-owned Host
@@ -749,6 +918,17 @@ class PasarGuardAdapter:
                 self.delete_host(int(h["id"]))
                 removed_hosts += 1
         self.restart_core(core, config)
+        try:
+            _sync_pasarguard_haproxy_ports(
+                {"listen": "127.0.0.1", "streamSettings": {"sockopt": {"acceptProxyProtocol": True}}},
+                [],
+            )
+        except RuntimeError as exc:
+            # Do not leave removal half-failed merely because HAProxy is not
+            # used on this installation. A corrupt GANJ-managed marker still
+            # surfaces as an error.
+            if "marker_corrupt" in str(exc):
+                raise
         return {"ok": True, "removed_inbounds": before - len(inbounds), "removed_hosts": removed_hosts}
 
 
