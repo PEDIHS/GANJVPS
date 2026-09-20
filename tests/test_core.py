@@ -8,6 +8,17 @@ import panel_sync
 from panel_sync import _alloc_ports, _location_map, choose_port_block, PasarGuardAdapter, SanaeiAdapter
 
 
+def without_live_ports(fn):
+    def wrapped(*args, **kwargs):
+        old = panel_sync.system_listening_ports
+        panel_sync.system_listening_ports = lambda: set()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            panel_sync.system_listening_ports = old
+    return wrapped
+
+
 class LocationTests(unittest.TestCase):
     def test_top_locations_are_unique_and_curated(self):
         self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 30)
@@ -38,6 +49,7 @@ class LocationTests(unittest.TestCase):
 
 
 class PasarGuardGenerationTests(unittest.TestCase):
+    @without_live_ports
     def test_install_generates_only_ganj_owned_objects(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-test-"))
         adapter = PasarGuardAdapter({
@@ -86,6 +98,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual(socks["settings"]["servers"][0], {"address": "10.60.0.1", "port": 1082})
 
 
+    @without_live_ports
     def test_host_clone_can_follow_generated_inbound_port(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-host-test-"))
         adapter = PasarGuardAdapter({
@@ -127,7 +140,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
         ])
-        self.assertEqual([x["port"] for x in created_hosts], [23000, 23001])
+        self.assertEqual([x["port"] for x in created_hosts], [4443, 2443])
         self.assertEqual([x["inbound_tag"] for x in created_hosts], ["ganj-de", "ganj-nl"])
         self.assertEqual(len(result["installed"]), 2)
 
@@ -220,6 +233,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
 
 
 class SanaeiGenerationTests(unittest.TestCase):
+    @without_live_ports
     def test_install_generates_country_inbounds_and_routing(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-xui-test-"))
         adapter = SanaeiAdapter({
@@ -249,7 +263,7 @@ class SanaeiGenerationTests(unittest.TestCase):
             {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
         ])
         managed = [x for x in inbounds if str(x.get("remark", "")).startswith("GANJ ")]
-        self.assertEqual([x["port"] for x in managed], [24000, 24001])
+        self.assertEqual([x["port"] for x in managed], [4443, 1443])
         self.assertEqual(len(result["installed"]), 2)
         tags = {x.get("tag") for x in xray["outbounds"]}
         self.assertIn("ganj-egress-de", tags)
@@ -281,6 +295,7 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual([x["local_port"] for x in plan["items"]], [22100, 22101])
 
 
+    @without_live_ports
     def test_sanaei_resync_updates_existing_country_in_place(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-xui-resync-"))
         adapter = SanaeiAdapter({
@@ -319,6 +334,24 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual(de["port"], 22100)
         self.assertEqual(fr["port"], 20000)
         self.assertEqual(len(result["installed"]), 2)
+
+
+    @without_live_ports
+    def test_requested_public_names_and_ports(self):
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["FR"], 1443)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["NL"], 2443)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["GB"], 3443)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["DE"], 4443)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["US"], 9443)
+        self.assertEqual(panel_sync.DISPLAY_LABELS["FR"], "🇫🇷 France dc")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["NL"], "🇳🇱 The Netherlands")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["US"], "🇺🇸 United States")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["GB"], "🇬🇧 United Kingdom")
+
+    def test_non_vless_template_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "template_protocol_must_be_vless"):
+            panel_sync._require_vless({"protocol": "trojan"})
 
 
 class DedicatedTemplateSafetyTests(unittest.TestCase):
