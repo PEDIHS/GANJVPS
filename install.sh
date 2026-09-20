@@ -97,44 +97,47 @@ if [[ "$SKIP_ENROLL" == "1" ]]; then
 fi
 
 if [[ -z "$ENROLL_TOKEN" && -r /dev/tty ]]; then
-  printf "Central URL [%s]: " "$CENTRAL_URL" >/dev/tty
-  IFS= read -r input </dev/tty || true
-  [[ -n "${input:-}" ]] && CENTRAL_URL="$input"
-  printf "One-time enrollment token: " >/dev/tty
+  say
+  say "${c_gold}${c_bold}  Enrollment${c_reset}"
+  rule
+  printf "%b" "${c_emerald}  Enrollment token › ${c_reset}" >/dev/tty
   IFS= read -rs ENROLL_TOKEN </dev/tty || true
   printf "\n" >/dev/tty
 fi
 
 if [[ -n "$ENROLL_TOKEN" ]]; then
-  say "${c_yellow}[~] Enrolling node with GANJ Central...${c_reset}"
+  step "Registering this server with GANJ Control"
   if /usr/local/bin/ganj-vps enroll --central "$CENTRAL_URL" --token "$ENROLL_TOKEN"; then
     systemctl enable --now "$SERVICE" >/dev/null
-    say "${c_green}[+] Node enrolled and agent started.${c_reset}"
+    ok "Server registered and secure agent started"
+
     if [[ -r /dev/tty ]]; then
-      printf "Configure the detected panel now? [Y/n]: " >/dev/tty
-      IFS= read -r setup_panel </dev/tty || true
-      if [[ ! "${setup_panel:-}" =~ ^[Nn]$ ]]; then
-        if /usr/local/bin/ganj-vps panel-configure </dev/tty >/dev/tty 2>/dev/tty; then
-          printf "Install/sync GANJ locations now? [Y/n]: " >/dev/tty
-          IFS= read -r setup_locations </dev/tty || true
-          if [[ ! "${setup_locations:-}" =~ ^[Nn]$ ]]; then
-            /usr/local/bin/ganj-vps locations-install --yes </dev/tty >/dev/tty 2>/dev/tty || true
-          fi
+      step "Configuring detected panel automatically"
+      if /usr/local/bin/ganj-vps panel-configure --auto </dev/tty >/dev/tty 2>/dev/tty; then
+        ok "Panel connection verified"
+        step "Creating and synchronizing GANJ locations"
+        if /usr/local/bin/ganj-vps locations-install --yes </dev/tty >/dev/tty 2>/dev/tty; then
+          ok "Locations synchronized"
+        else
+          warn "Panel is configured, but location sync needs attention. Run: ganj-vps locations-install"
         fi
+      else
+        warn "Automatic panel setup was not completed. Run: ganj-vps panel-configure"
       fi
     fi
   else
-    say "${c_red}[-] Enrollment failed. The software is installed but the service was not started.${c_reset}"
-    say "    Retry with: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
-    exit 1
+    die "Enrollment failed. Verify the one-time token and try again."
   fi
 else
-  say "${c_yellow}[!] No enrollment token supplied. Installation completed without enrollment.${c_reset}"
-  say "    Run: ganj-vps enroll --central '$CENTRAL_URL' --token '<TOKEN>'"
+  warn "No enrollment token supplied; runtime installed without activation."
+  say "  ${c_dim}Run the installer again with a fresh token from the Representatives panel.${c_reset}"
 fi
 
 say
-say "${c_green}[+] GANJ VPS installed successfully.${c_reset}"
-say "    CLI:      ganj-vps"
-say "    Status:   ganj-vps status"
-say "    Diagnose: ganj-vps diagnostics"
+rule
+say "  ${c_emerald2}${c_bold}✓ GANJ VPS ${VERSION} is ready${c_reset}"
+say "  ${c_dim}CLI${c_reset}       ${c_gold}ganj-vps${c_reset}"
+say "  ${c_dim}Live${c_reset}      ganj-vps status --watch"
+say "  ${c_dim}Health${c_reset}    ganj-vps diagnostics"
+rule
+say
