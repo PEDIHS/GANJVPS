@@ -1,6 +1,6 @@
 # GANJ VPS
 
-GANJ VPS is the clean-room node installer and control agent for the GANJ gateway platform.
+GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.2.0**.
 
 It is designed for servers running supported Xray panels such as Sanaei 3x-ui and PasarGuard, and connects them to a GANJ central gateway through a managed WireGuard control/data plane.
 
@@ -14,7 +14,10 @@ It is designed for servers running supported Xray panels such as Sanaei 3x-ui an
 - 30 curated gateway locations with stable ports
 - Central health, heartbeat, desired-state and failover control
 - Local panel adapters for Sanaei 3x-ui and PasarGuard
-- Safe backup / validate / apply / rollback workflow
+- Safe GANJ-owned location generation with backups and isolated tags
+- One-time enrollment tokens with license duration and optional traffic quota
+- Per-node WireGuard usage accounting and entitlement enforcement
+- Whitelisted central command queue (no arbitrary remote shell)
 - Live status, diagnostics, update and uninstall commands
 
 ## Clean-room notice
@@ -27,7 +30,7 @@ GANJ VPS is an independent implementation. Other public projects may be reviewed
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/install.sh)"
 ```
 
-The installer asks for the GANJ Central URL and a one-time enrollment token.
+The installer asks for the GANJ Central URL and a one-time enrollment token. After enrollment it can optionally guide the operator through local panel configuration and location installation.
 
 ## CLI
 
@@ -35,12 +38,21 @@ The installer asks for the GANJ Central URL and a one-time enrollment token.
 ganj-vps
 ganj-vps status
 ganj-vps diagnostics
+ganj-vps panel-configure
+ganj-vps panel-status
+ganj-vps locations-list
+ganj-vps locations-install
+ganj-vps locations-remove
 ganj-vps update
 ganj-vps uninstall
 ```
 
 ## Security
 
-Node secrets and panel credentials are stored only on the node under `/etc/ganj-vps/` with root-only permissions. The central service stores a hash of each node secret rather than the plaintext secret.
+Node secrets and panel credentials are stored only on the node under `/etc/ganj-vps/` with root-only permissions. The central service stores a hash of each node secret rather than the plaintext secret. Customer panel credentials are never sent to the GANJ control plane.
+
+Central actions are restricted to an allow-list such as diagnostics, panel status, location sync/removal and WireGuard restart. GANJ VPS intentionally has no arbitrary remote-shell command endpoint.
+
+See `docs/ARCHITECTURE.md` and `docs/CLEAN_ROOM.md` for the architecture and development policy.
 
 Copyright © 2026 GANJ VPS. All rights reserved.
