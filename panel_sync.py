@@ -637,13 +637,41 @@ class PasarGuardAdapter:
                 if not managed_tags.issubset(verify_hosts):
                     raise RuntimeError("pasarguard_post_install_host_verification_failed")
 
+            # Only now reload/restart the selected Core/Nodes once. Saving the
+            # Core and cloning Hosts are deliberately completed first so users
+            # never see a half-applied runtime.
+            self.restart_core(core, config)
+
+            # If this Core is local (its selected template port is currently
+            # listening on this machine), require every generated location
+            # port to become live after the restart.
+            template_port = int(template.get("port") or 0)
+            live_before = system_listening_ports()
+            if template_port and template_port in live_before:
+                expected_ports = {int(x["local_port"]) for x in created}
+                deadline = time.time() + 20
+                live_after: set[int] = set()
+                while time.time() < deadline:
+                    live_after = system_listening_ports()
+                    if expected_ports.issubset(live_after):
+                        break
+                    time.sleep(1)
+                if not expected_ports.issubset(live_after):
+                    missing = sorted(expected_ports - live_after)
+                    raise RuntimeError(
+                        "pasarguard_runtime_ports_not_listening:" +
+                        ",".join(str(x) for x in missing)
+                    )
+
             return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
 
         except Exception:
-            # Roll back both the core document and GANJ-owned Host objects.
+            # Roll back both the core document and only GANJ-owned Host
+            # objects. Legacy/operator country Hosts are intentionally ignored.
             try:
+                old_config = copy.deepcopy(old_core.get("config") or {})
                 if core_applied:
-                    self.update_core(old_core, copy.deepcopy(old_core.get("config") or {}))
+                    self.update_core(old_core, old_config)
                 if template_host:
                     for h in self.get_hosts():
                         if _is_ganj_pasarguard_owned_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
@@ -652,6 +680,8 @@ class PasarGuardAdapter:
                         h = copy.deepcopy(old)
                         h.pop("id", None)
                         self.create_host(h)
+                if core_applied:
+                    self.restart_core(old_core, old_config)
             except Exception:
                 pass
             raise
@@ -678,6 +708,7 @@ class PasarGuardAdapter:
             if _is_ganj_pasarguard_owned_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                 self.delete_host(int(h["id"]))
                 removed_hosts += 1
+        self.restart_core(core, config)
         return {"ok": True, "removed_inbounds": before - len(inbounds), "removed_hosts": removed_hosts}
 
 
