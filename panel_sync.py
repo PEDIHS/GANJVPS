@@ -18,23 +18,54 @@ GANJ_OUT_PREFIX = "ganj-egress-"
 GANJ_REMARK_PREFIX = "GANJ "
 REQUIRED_USER_PROTOCOL = "vless"
 
-# Stable user-facing inbound ports. These are separate from the private
-# central gateway SOCKS ports (1080, 1081, ...).
-PREFERRED_LOCAL_PORTS = {
-    "FR": 1443, "NL": 2443, "GB": 3443, "DE": 4443, "CA": 5443,
-    "PL": 6443, "IT": 7443, "US": 9443, "FI": 10443, "LV": 11443,
-    "ES": 12443, "CH": 13443, "RO": 14443, "RU": 15443, "TR": 16443,
-    "LT": 17443, "SE": 18443, "SG": 19443, "BG": 21443, "EE": 22443,
-    "NO": 23443, "AT": 25443, "BE": 26443, "CZ": 27443, "DK": 28443,
-    "IE": 29443, "AE": 30443, "JP": 31443, "KR": 32443, "AU": 33443,
+# Canonical GANJ location catalog. The order is also the deterministic
+# user-facing inbound port order: 6000, 6001, ... 6029. Port 6030 is
+# intentionally kept free for one future catalog location without reshuffling
+# any existing country.
+PORT_RANGE_START = 6000
+PORT_RANGE_END = 6030
+LOCATION_CATALOG = {
+    "DE": {"country": "Germany", "city": "Berlin", "flag": "🇩🇪"},
+    "NL": {"country": "Netherlands", "city": "Amsterdam", "flag": "🇳🇱"},
+    "FR": {"country": "France", "city": "Paris", "flag": "🇫🇷"},
+    "GB": {"country": "United Kingdom", "city": "London", "flag": "🇬🇧"},
+    "TR": {"country": "Türkiye", "city": "Ankara", "flag": "🇹🇷"},
+    "FI": {"country": "Finland", "city": "Helsinki", "flag": "🇫🇮"},
+    "SE": {"country": "Sweden", "city": "Stockholm", "flag": "🇸🇪"},
+    "CH": {"country": "Switzerland", "city": "Bern", "flag": "🇨🇭"},
+    "AT": {"country": "Austria", "city": "Vienna", "flag": "🇦🇹"},
+    "BE": {"country": "Belgium", "city": "Brussels", "flag": "🇧🇪"},
+    "PL": {"country": "Poland", "city": "Warsaw", "flag": "🇵🇱"},
+    "IT": {"country": "Italy", "city": "Rome", "flag": "🇮🇹"},
+    "ES": {"country": "Spain", "city": "Madrid", "flag": "🇪🇸"},
+    "RO": {"country": "Romania", "city": "Bucharest", "flag": "🇷🇴"},
+    "BG": {"country": "Bulgaria", "city": "Sofia", "flag": "🇧🇬"},
+    "CZ": {"country": "Czechia", "city": "Prague", "flag": "🇨🇿"},
+    "NO": {"country": "Norway", "city": "Oslo", "flag": "🇳🇴"},
+    "DK": {"country": "Denmark", "city": "Copenhagen", "flag": "🇩🇰"},
+    "IE": {"country": "Ireland", "city": "Dublin", "flag": "🇮🇪"},
+    "LT": {"country": "Lithuania", "city": "Vilnius", "flag": "🇱🇹"},
+    "LV": {"country": "Latvia", "city": "Riga", "flag": "🇱🇻"},
+    "EE": {"country": "Estonia", "city": "Tallinn", "flag": "🇪🇪"},
+    "US": {"country": "United States", "city": "Washington, D.C.", "flag": "🇺🇸"},
+    "CA": {"country": "Canada", "city": "Ottawa", "flag": "🇨🇦"},
+    "AE": {"country": "United Arab Emirates", "city": "Abu Dhabi", "flag": "🇦🇪"},
+    "RU": {"country": "Russia", "city": "Moscow", "flag": "🇷🇺"},
+    "SG": {"country": "Singapore", "city": "Singapore", "flag": "🇸🇬"},
+    "JP": {"country": "Japan", "city": "Tokyo", "flag": "🇯🇵"},
+    "KR": {"country": "South Korea", "city": "Seoul", "flag": "🇰🇷"},
+    "AU": {"country": "Australia", "city": "Canberra", "flag": "🇦🇺"},
 }
+PREFERRED_LOCAL_PORTS = {
+    code: PORT_RANGE_START + index
+    for index, code in enumerate(LOCATION_CATALOG)
+}
+if PREFERRED_LOCAL_PORTS and max(PREFERRED_LOCAL_PORTS.values()) > PORT_RANGE_END:
+    raise RuntimeError("ganj_location_catalog_exceeds_reserved_port_range")
 
 DISPLAY_LABELS = {
-    "FR": "🇫🇷 France dc",
-    "NL": "🇳🇱 The Netherlands",
-    "DE": "🇩🇪 Germany",
-    "US": "🇺🇸 United States",
-    "GB": "🇬🇧 United Kingdom",
+    code: f"{meta['flag']} {meta['country']} — {meta['city']}"
+    for code, meta in LOCATION_CATALOG.items()
 }
 
 
@@ -50,14 +81,19 @@ def _location_map(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for x in locations:
         code = str(x.get("country_code") or "").upper()
-        port = int(x.get("port") or 0)
-        if len(code) != 2 or not port or not x.get("enabled", True):
+        if len(code) != 2:
             continue
+        port = int(x.get("port") or 0)
+        enabled = bool(x.get("enabled", True))
+        meta = LOCATION_CATALOG.get(code) or {}
         out.append({
             "country_code": code,
-            "name": str(x.get("name") or code),
-            "flag": str(x.get("flag") or ""),
+            "name": str(x.get("name") or meta.get("country") or code),
+            "city": str(x.get("city") or meta.get("city") or ""),
+            "flag": str(x.get("flag") or meta.get("flag") or ""),
             "port": port,
+            "enabled": enabled,
+            "available": bool(enabled and port),
         })
     return out
 
@@ -159,6 +195,27 @@ def _require_vless(template: dict[str, Any]) -> None:
         raise RuntimeError("template_protocol_must_be_vless")
 
 
+def _gateway_outbound(loc: dict[str, Any], out_tag: str) -> dict[str, Any]:
+    if bool(loc.get("available")) and int(loc.get("port") or 0) > 0:
+        return {
+            "tag": out_tag,
+            "protocol": "socks",
+            "settings": {
+                "servers": [{
+                    "address": "10.60.0.1",
+                    "port": int(loc["port"]),
+                }]
+            },
+        }
+    # Keep the Host/Inbound pre-created without allowing accidental direct
+    # egress before the central gateway publishes a real config for it.
+    return {
+        "tag": out_tag,
+        "protocol": "blackhole",
+        "settings": {"response": {"type": "none"}},
+    }
+
+
 def _plan_stable_country_ports(
     locs: list[dict[str, Any]],
     used: set[int],
@@ -169,14 +226,19 @@ def _plan_stable_country_ports(
     assigned: dict[str, int] = {}
     for loc in locs:
         code = loc["country_code"]
-        if code in existing_by_country:
-            assigned[code] = int(existing_by_country[code])
-            continue
         preferred = PREFERRED_LOCAL_PORTS.get(code)
         if preferred is None:
             raise RuntimeError(f"preferred_port_missing_{code}")
+
+        owner = next(
+            (other for other, port in existing_by_country.items() if int(port) == int(preferred)),
+            None,
+        )
+        if owner and owner != code:
+            raise RuntimeError(f"preferred_port_owned_by_{owner}_{preferred}")
         if preferred in used or (preferred in live and preferred not in preserved):
             raise RuntimeError(f"preferred_port_conflict_{code}_{preferred}")
+
         assigned[code] = int(preferred)
         used.add(int(preferred))
     return assigned
@@ -378,10 +440,11 @@ class PasarGuardAdapter:
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
-                "gateway_port": loc["port"],
+                "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
                 "inbound_tag": GANJ_IN_PREFIX + loc["country_code"].lower(),
                 "host_clone": bool(template_host),
+                "available": bool(loc.get("available")),
             })
         return {
             "ok": True,
@@ -460,11 +523,7 @@ class PasarGuardAdapter:
             inbound["port"] = local_port
             inbounds.append(inbound)
 
-            outbounds.append({
-                "tag": out_tag,
-                "protocol": "socks",
-                "settings": {"servers": [{"address": "10.60.0.1", "port": int(loc["port"])}]},
-            })
+            outbounds.append(_gateway_outbound(loc, out_tag))
             rules.insert(0, {
                 "type": "field",
                 "inboundTag": [in_tag],
@@ -474,7 +533,8 @@ class PasarGuardAdapter:
                 "country_code": code,
                 "inbound_tag": in_tag,
                 "local_port": local_port,
-                "gateway_port": int(loc["port"]),
+                "gateway_port": int(loc["port"]) if loc.get("available") else None,
+                "available": bool(loc.get("available")),
             })
 
         core_applied = False
@@ -745,9 +805,10 @@ class SanaeiAdapter:
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
-                "gateway_port": loc["port"],
+                "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
                 "template_inbound_id": self.template_inbound_id,
+                "available": bool(loc.get("available")),
             })
         return {"ok": True, "type": "sanaei", "items": items}
 
@@ -812,7 +873,8 @@ class SanaeiAdapter:
                 created.append({
                     "country_code": code,
                     "local_port": int(planned_ports[code]),
-                    "gateway_port": int(loc["port"]),
+                    "gateway_port": int(loc["port"]) if loc.get("available") else None,
+                    "available": bool(loc.get("available")),
                 })
 
             now_rows = self.list_inbounds()
@@ -842,11 +904,7 @@ class SanaeiAdapter:
                 )
                 item["inbound_tag"] = inbound_tag
                 out_tag = GANJ_OUT_PREFIX + loc["country_code"].lower()
-                outbounds.append({
-                    "tag": out_tag,
-                    "protocol": "socks",
-                    "settings": {"servers": [{"address": "10.60.0.1", "port": int(loc["port"])}]},
-                })
+                outbounds.append(_gateway_outbound(loc, out_tag))
                 rules.insert(0, {"type": "field", "inboundTag": [inbound_tag], "outboundTag": out_tag})
 
             self.update_xray(cfg, test_url)
