@@ -232,6 +232,70 @@ class GatewayManagerTests(unittest.TestCase):
         self.assertEqual(ganj_vps._version_tuple("v1.2.3"), (1, 2, 3))
 
 
+class LocationProbeTests(unittest.TestCase):
+    def test_socks_probe_uses_domain_atyp_for_hostname(self):
+        old_create = ganj_vps.socket.create_connection
+        old_time = ganj_vps.time.monotonic
+        sent = []
+
+        class FakeSocket:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def settimeout(self, value):
+                pass
+            def sendall(self, data):
+                sent.append(data)
+            def recv(self, size):
+                if len(sent) == 1:
+                    return b"\x05\x00"
+                return b"\x05\x00\x00\x01"
+
+        ticks = iter([10.0, 10.123])
+        try:
+            ganj_vps.socket.create_connection = lambda *args, **kwargs: FakeSocket()
+            ganj_vps.time.monotonic = lambda: next(ticks)
+            latency = ganj_vps.socks5_latency_ms(
+                "10.60.0.1", 1081, "www.cloudflare.com", 443, 1.0
+            )
+            self.assertEqual(latency, 123.0)
+            request = sent[1]
+            self.assertEqual(request[:4], b"\x05\x01\x00\x03")
+            length = request[4]
+            self.assertEqual(request[5:5+length], b"www.cloudflare.com")
+        finally:
+            ganj_vps.socket.create_connection = old_create
+            ganj_vps.time.monotonic = old_time
+
+    def test_socks_probe_keeps_ipv4_atyp_for_ipv4_target(self):
+        old_create = ganj_vps.socket.create_connection
+        sent = []
+
+        class FakeSocket:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def settimeout(self, value):
+                pass
+            def sendall(self, data):
+                sent.append(data)
+            def recv(self, size):
+                if len(sent) == 1:
+                    return b"\x05\x00"
+                return b"\x05\x00\x00\x01"
+
+        try:
+            ganj_vps.socket.create_connection = lambda *args, **kwargs: FakeSocket()
+            self.assertIsNotNone(
+                ganj_vps.socks5_latency_ms("10.60.0.1", 1082, "1.1.1.1", 443, 1.0)
+            )
+            self.assertEqual(sent[1][:4], b"\x05\x01\x00\x01")
+        finally:
+            ganj_vps.socket.create_connection = old_create
+
+
 class InstallerUXTests(unittest.TestCase):
     def test_installer_hides_central_url_and_curl_progress(self):
         installer = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
