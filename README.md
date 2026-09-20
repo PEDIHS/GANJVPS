@@ -27,6 +27,7 @@ It is designed for servers running supported Xray panels such as Sanaei 3x-ui an
 - Central endpoint hidden from the operator during installation
 - Automatic local PasarGuard endpoint discovery; only admin credentials are requested for connection
 - Explicit manual Core, template Inbound, Host and Host-port-policy selection
+- Installer auto mode never auto-selects a production Core, Inbound or Host template
 - Collision-aware automatic local port allocation
 - PasarGuard Host cloning from the operator-selected template
 - Safe GANJ-owned location generation with backups and isolated tags
