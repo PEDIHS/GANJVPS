@@ -261,13 +261,13 @@ def configure_panel(force_manual: bool = False) -> int:
     _print_inbounds(kind, inbounds)
 
     if kind == "sanaei":
-        print("\nChoose the inbound whose protocol/settings must be cloned for GANJ locations.")
+        print("\nChoose the dedicated template inbound. GANJ VPS will READ and CLONE it; the template itself will never be modified or deleted.")
         selected = _choose_index("Inbound list number", inbounds)
         profile["template_inbound_id"] = int(selected.get("id") or 0)
         if not profile["template_inbound_id"]:
             raise RuntimeError("invalid_template_inbound")
     else:
-        print("\nChoose the inbound tag whose protocol/settings must be cloned for GANJ locations.")
+        print("\nChoose the dedicated template inbound tag. GANJ VPS will READ and CLONE it; the template itself will never be modified or deleted.")
         selected = _choose_index("Inbound list number", inbounds)
         profile["template_inbound_tag"] = str(selected.get("tag") or "")
         if not profile["template_inbound_tag"]:
