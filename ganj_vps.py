@@ -904,7 +904,7 @@ def menu() -> int:
         print("╰────────────────────────────────────────╯")
         print(f"Panel: {panel['name']}")
         print()
-        print("[1] Status")
+        print("[1] Live Status")
         print("[2] Configure / verify panel")
         print("[3] Panel status")
         print("[4] Install / sync 30 locations")
@@ -919,7 +919,7 @@ def menu() -> int:
         choice = input("> ").strip()
         try:
             if choice == "1":
-                status()
+                status(watch=True)
             elif choice == "2":
                 configure_panel()
             elif choice == "3":
@@ -953,18 +953,23 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--central", default=DEFAULT_CENTRAL)
     e.add_argument("--token", required=True)
     sub.add_parser("agent")
-    sub.add_parser("status")
+    st = sub.add_parser("status")
+    st.add_argument("--watch", action="store_true")
     sub.add_parser("diagnostics")
     sub.add_parser("sync")
     sub.add_parser("update")
     sub.add_parser("uninstall")
     pc = sub.add_parser("panel-configure")
+    pc.add_argument("--manual", action="store_true")
+    sub.add_parser("panel-detect")
     sub.add_parser("panel-status")
+    sub.add_parser("panel-inbounds")
     li = sub.add_parser("locations-install")
     li.add_argument("--yes", action="store_true")
     lr = sub.add_parser("locations-remove")
     lr.add_argument("--yes", action="store_true")
     sub.add_parser("locations-list")
+    sub.add_parser("locations-plan")
     return p
 
 def main() -> int:
@@ -985,22 +990,29 @@ def main() -> int:
             agent_loop()
             return 0
         if args.cmd == "status":
-            return status()
+            return status(bool(args.watch))
         if args.cmd == "diagnostics":
             return diagnostics()
         if args.cmd == "sync":
             print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             return 0
         if args.cmd == "panel-configure":
-            return configure_panel()
+            return configure_panel(bool(args.manual))
+        if args.cmd == "panel-detect":
+            print(json.dumps({"items": detect_panels()}, ensure_ascii=False, indent=2))
+            return 0
         if args.cmd == "panel-status":
             return panel_status()
+        if args.cmd == "panel-inbounds":
+            return panel_discovery()
         if args.cmd == "locations-install":
             return locations_install(bool(args.yes))
         if args.cmd == "locations-remove":
             return locations_remove(bool(args.yes))
         if args.cmd == "locations-list":
             return locations_list()
+        if args.cmd == "locations-plan":
+            return locations_plan()
         if args.cmd == "update":
             return update_self()
         if args.cmd == "uninstall":
