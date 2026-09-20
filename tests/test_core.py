@@ -96,8 +96,8 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual(len(result["installed"]), 2)
         tags = {x["tag"] for x in cfg["inbounds"]}
         self.assertIn("template", tags)
-        self.assertIn("ganj-de", tags)
-        self.assertIn("ganj-nl", tags)
+        self.assertIn("🇩🇪 Germany — Berlin", tags)
+        self.assertIn("🇳🇱 Netherlands — Amsterdam", tags)
         outbound_tags = {x["tag"] for x in cfg["outbounds"]}
         self.assertIn("direct", outbound_tags)
         self.assertIn("ganj-egress-de", outbound_tags)
@@ -255,7 +255,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         fail_once = [True]
         next_id = [100]
         def create_host(host):
-            if fail_once[0] and str(host.get("inbound_tag") or "") == "ganj-de":
+            if fail_once[0] and panel_sync._country_from_pasarguard_tag(str(host.get("inbound_tag") or "")) == "DE":
                 fail_once[0] = False
                 raise RuntimeError("simulated_host_failure")
             row = copy.deepcopy(host); row["id"] = next_id[0]; next_id[0] += 1
