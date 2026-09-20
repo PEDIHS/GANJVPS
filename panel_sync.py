@@ -332,7 +332,16 @@ class PasarGuardAdapter:
         locs = _location_map(locations)
         if not locs:
             raise RuntimeError("no_locations")
+
+        # Plan first so an existing GANJ port mapping remains stable on re-sync.
+        plan = self.plan_locations(locs)
+        planned_ports = {
+            str(x.get("country_code")): int(x.get("local_port"))
+            for x in (plan.get("items") or [])
+        }
+
         core = self.get_core()
+        old_core = copy.deepcopy(core)
         config = copy.deepcopy(core.get("config") or {})
         inbounds = config.setdefault("inbounds", [])
         outbounds = config.setdefault("outbounds", [])
@@ -343,32 +352,39 @@ class PasarGuardAdapter:
         if not template:
             raise RuntimeError("pasarguard_template_inbound_not_found")
 
-        _atomic_backup("pasarguard-core", core)
         hosts = self.get_hosts()
         template_host = next((x for x in hosts if int(x.get("id") or 0) == self.template_host_id), None)
         if self.template_host_id and not template_host:
             raise RuntimeError("pasarguard_template_host_not_found")
+        old_managed_hosts = [
+            copy.deepcopy(x) for x in hosts
+            if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)
+        ]
+
+        _atomic_backup("pasarguard-core", old_core)
+        if old_managed_hosts:
+            _atomic_backup("pasarguard-hosts", old_managed_hosts)
 
         managed_tags = {GANJ_IN_PREFIX + x["country_code"].lower() for x in locs}
         managed_out = {GANJ_OUT_PREFIX + x["country_code"].lower() for x in locs}
-        inbounds[:] = [x for x in inbounds if x.get("tag") not in managed_tags]
-        outbounds[:] = [x for x in outbounds if x.get("tag") not in managed_out]
+        inbounds[:] = [
+            x for x in inbounds
+            if not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
+        ]
+        outbounds[:] = [
+            x for x in outbounds
+            if not str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)
+        ]
         rules[:] = [
             x for x in rules
-            if x.get("outboundTag") not in managed_out
+            if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
             and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
         ]
 
-        plan = self.plan_locations(locs)
-        planned_ports = {
-            str(x.get("country_code")): int(x.get("local_port"))
-            for x in (plan.get("items") or [])
-        }
-
         created = []
         for loc in locs:
-            local_port = planned_ports[loc["country_code"]]
             code = loc["country_code"]
+            local_port = planned_ports[code]
             in_tag = GANJ_IN_PREFIX + code.lower()
             out_tag = GANJ_OUT_PREFIX + code.lower()
 
@@ -380,37 +396,79 @@ class PasarGuardAdapter:
             outbounds.append({
                 "tag": out_tag,
                 "protocol": "socks",
-                "settings": {"servers": [{"address": "10.60.0.1", "port": loc["port"]}]},
+                "settings": {"servers": [{"address": "10.60.0.1", "port": int(loc["port"])}]},
             })
             rules.insert(0, {
                 "type": "field",
                 "inboundTag": [in_tag],
                 "outboundTag": out_tag,
             })
-            created.append({"country_code": code, "inbound_tag": in_tag, "local_port": local_port, "gateway_port": loc["port"]})
+            created.append({
+                "country_code": code,
+                "inbound_tag": in_tag,
+                "local_port": local_port,
+                "gateway_port": int(loc["port"]),
+            })
 
-        self.update_core(core, config)
+        core_applied = False
+        try:
+            self.update_core(core, config)
+            core_applied = True
 
-        if template_host:
-            current_hosts = self.get_hosts()
-            for h in current_hosts:
-                tag = str(h.get("inbound_tag") or "")
-                if tag.startswith(GANJ_IN_PREFIX) and h.get("id"):
-                    self.delete_host(int(h["id"]))
-            for item, loc in zip(created, locs):
-                h = copy.deepcopy(template_host)
-                h.pop("id", None)
-                h["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
-                h["inbound_tag"] = item["inbound_tag"]
-                host_port_mode = str(self.profile.get("host_port_mode") or "template")
-                if host_port_mode == "inbound":
-                    h["port"] = int(item["local_port"])
-                elif host_port_mode == "none":
-                    h["port"] = None
-                # template mode intentionally preserves the selected host's port.
-                self.create_host(h)
+            if template_host:
+                for h in self.get_hosts():
+                    tag = str(h.get("inbound_tag") or "")
+                    if tag.startswith(GANJ_IN_PREFIX) and h.get("id"):
+                        self.delete_host(int(h["id"]))
 
-        return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
+                for item, loc in zip(created, locs):
+                    h = copy.deepcopy(template_host)
+                    h.pop("id", None)
+                    h["remark"] = f"{GANJ_REMARK_PREFIX}{loc['country_code']} · {loc['name']}"
+                    h["inbound_tag"] = item["inbound_tag"]
+                    host_port_mode = str(self.profile.get("host_port_mode") or "template")
+                    if host_port_mode == "inbound":
+                        h["port"] = int(item["local_port"])
+                    elif host_port_mode == "none":
+                        h["port"] = None
+                    self.create_host(h)
+
+            # Read-after-write verification catches API success responses that
+            # did not actually persist all requested objects.
+            verify_core = self.get_core()
+            verify_cfg = verify_core.get("config") or {}
+            verify_in = {str(x.get("tag") or "") for x in (verify_cfg.get("inbounds") or [])}
+            verify_out = {str(x.get("tag") or "") for x in (verify_cfg.get("outbounds") or [])}
+            if not managed_tags.issubset(verify_in) or not managed_out.issubset(verify_out):
+                raise RuntimeError("pasarguard_post_install_core_verification_failed")
+
+            if template_host:
+                verify_hosts = {
+                    str(x.get("inbound_tag") or "")
+                    for x in self.get_hosts()
+                    if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)
+                }
+                if not managed_tags.issubset(verify_hosts):
+                    raise RuntimeError("pasarguard_post_install_host_verification_failed")
+
+            return {"ok": True, "installed": created, "backup": str(BACKUP_DIR)}
+
+        except Exception:
+            # Roll back both the core document and GANJ-owned Host objects.
+            try:
+                if core_applied:
+                    self.update_core(old_core, copy.deepcopy(old_core.get("config") or {}))
+                if template_host:
+                    for h in self.get_hosts():
+                        if str(h.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX) and h.get("id"):
+                            self.delete_host(int(h["id"]))
+                    for old in old_managed_hosts:
+                        h = copy.deepcopy(old)
+                        h.pop("id", None)
+                        self.create_host(h)
+            except Exception:
+                pass
+            raise
 
     def remove_locations(self) -> dict[str, Any]:
         self.login()
