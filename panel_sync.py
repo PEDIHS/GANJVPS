@@ -18,23 +18,54 @@ GANJ_OUT_PREFIX = "ganj-egress-"
 GANJ_REMARK_PREFIX = "GANJ "
 REQUIRED_USER_PROTOCOL = "vless"
 
-# Stable user-facing inbound ports. These are separate from the private
-# central gateway SOCKS ports (1080, 1081, ...).
-PREFERRED_LOCAL_PORTS = {
-    "FR": 1443, "NL": 2443, "GB": 3443, "DE": 4443, "CA": 5443,
-    "PL": 6443, "IT": 7443, "US": 9443, "FI": 10443, "LV": 11443,
-    "ES": 12443, "CH": 13443, "RO": 14443, "RU": 15443, "TR": 16443,
-    "LT": 17443, "SE": 18443, "SG": 19443, "BG": 21443, "EE": 22443,
-    "NO": 23443, "AT": 25443, "BE": 26443, "CZ": 27443, "DK": 28443,
-    "IE": 29443, "AE": 30443, "JP": 31443, "KR": 32443, "AU": 33443,
+# Canonical GANJ location catalog. The order is also the deterministic
+# user-facing inbound port order: 6000, 6001, ... 6029. Port 6030 is
+# intentionally kept free for one future catalog location without reshuffling
+# any existing country.
+PORT_RANGE_START = 6000
+PORT_RANGE_END = 6030
+LOCATION_CATALOG = {
+    "DE": {"country": "Germany", "city": "Berlin", "flag": "🇩🇪"},
+    "NL": {"country": "Netherlands", "city": "Amsterdam", "flag": "🇳🇱"},
+    "FR": {"country": "France", "city": "Paris", "flag": "🇫🇷"},
+    "GB": {"country": "United Kingdom", "city": "London", "flag": "🇬🇧"},
+    "TR": {"country": "Türkiye", "city": "Ankara", "flag": "🇹🇷"},
+    "FI": {"country": "Finland", "city": "Helsinki", "flag": "🇫🇮"},
+    "SE": {"country": "Sweden", "city": "Stockholm", "flag": "🇸🇪"},
+    "CH": {"country": "Switzerland", "city": "Bern", "flag": "🇨🇭"},
+    "AT": {"country": "Austria", "city": "Vienna", "flag": "🇦🇹"},
+    "BE": {"country": "Belgium", "city": "Brussels", "flag": "🇧🇪"},
+    "PL": {"country": "Poland", "city": "Warsaw", "flag": "🇵🇱"},
+    "IT": {"country": "Italy", "city": "Rome", "flag": "🇮🇹"},
+    "ES": {"country": "Spain", "city": "Madrid", "flag": "🇪🇸"},
+    "RO": {"country": "Romania", "city": "Bucharest", "flag": "🇷🇴"},
+    "BG": {"country": "Bulgaria", "city": "Sofia", "flag": "🇧🇬"},
+    "CZ": {"country": "Czechia", "city": "Prague", "flag": "🇨🇿"},
+    "NO": {"country": "Norway", "city": "Oslo", "flag": "🇳🇴"},
+    "DK": {"country": "Denmark", "city": "Copenhagen", "flag": "🇩🇰"},
+    "IE": {"country": "Ireland", "city": "Dublin", "flag": "🇮🇪"},
+    "LT": {"country": "Lithuania", "city": "Vilnius", "flag": "🇱🇹"},
+    "LV": {"country": "Latvia", "city": "Riga", "flag": "🇱🇻"},
+    "EE": {"country": "Estonia", "city": "Tallinn", "flag": "🇪🇪"},
+    "US": {"country": "United States", "city": "Washington, D.C.", "flag": "🇺🇸"},
+    "CA": {"country": "Canada", "city": "Ottawa", "flag": "🇨🇦"},
+    "AE": {"country": "United Arab Emirates", "city": "Abu Dhabi", "flag": "🇦🇪"},
+    "RU": {"country": "Russia", "city": "Moscow", "flag": "🇷🇺"},
+    "SG": {"country": "Singapore", "city": "Singapore", "flag": "🇸🇬"},
+    "JP": {"country": "Japan", "city": "Tokyo", "flag": "🇯🇵"},
+    "KR": {"country": "South Korea", "city": "Seoul", "flag": "🇰🇷"},
+    "AU": {"country": "Australia", "city": "Canberra", "flag": "🇦🇺"},
 }
+PREFERRED_LOCAL_PORTS = {
+    code: PORT_RANGE_START + index
+    for index, code in enumerate(LOCATION_CATALOG)
+}
+if PREFERRED_LOCAL_PORTS and max(PREFERRED_LOCAL_PORTS.values()) > PORT_RANGE_END:
+    raise RuntimeError("ganj_location_catalog_exceeds_reserved_port_range")
 
 DISPLAY_LABELS = {
-    "FR": "🇫🇷 France dc",
-    "NL": "🇳🇱 The Netherlands",
-    "DE": "🇩🇪 Germany",
-    "US": "🇺🇸 United States",
-    "GB": "🇬🇧 United Kingdom",
+    code: f"{meta['flag']} {meta['country']} — {meta['city']}"
+    for code, meta in LOCATION_CATALOG.items()
 }
 
 
@@ -50,14 +81,19 @@ def _location_map(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for x in locations:
         code = str(x.get("country_code") or "").upper()
-        port = int(x.get("port") or 0)
-        if len(code) != 2 or not port or not x.get("enabled", True):
+        if len(code) != 2:
             continue
+        port = int(x.get("port") or 0)
+        enabled = bool(x.get("enabled", True))
+        meta = LOCATION_CATALOG.get(code) or {}
         out.append({
             "country_code": code,
-            "name": str(x.get("name") or code),
-            "flag": str(x.get("flag") or ""),
+            "name": str(x.get("name") or meta.get("country") or code),
+            "city": str(x.get("city") or meta.get("city") or ""),
+            "flag": str(x.get("flag") or meta.get("flag") or ""),
             "port": port,
+            "enabled": enabled,
+            "available": bool(enabled and port),
         })
     return out
 
@@ -144,7 +180,7 @@ def _country_from_ganj_remark(value: str) -> str | None:
     for code, label in DISPLAY_LABELS.items():
         if raw == label:
             return code
-    # New human-facing names begin with a Unicode flag. Decode the two
+    # Human-facing names begin with a Unicode flag. Decode the two
     # regional-indicator symbols back to an ISO alpha-2 country code.
     if len(raw) >= 2:
         a, b = ord(raw[0]), ord(raw[1])
@@ -154,9 +190,43 @@ def _country_from_ganj_remark(value: str) -> str | None:
     return None
 
 
+def _country_from_pasarguard_tag(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if raw.startswith(GANJ_IN_PREFIX):
+        code = raw[len(GANJ_IN_PREFIX):len(GANJ_IN_PREFIX) + 2].upper()
+        if code in LOCATION_CATALOG:
+            return code
+    return _country_from_ganj_remark(raw)
+
+
+def _is_ganj_pasarguard_tag(value: str) -> bool:
+    return _country_from_pasarguard_tag(value) is not None
+
+
 def _require_vless(template: dict[str, Any]) -> None:
     if _protocol_name(template).lower() != REQUIRED_USER_PROTOCOL:
         raise RuntimeError("template_protocol_must_be_vless")
+
+
+def _gateway_outbound(loc: dict[str, Any], out_tag: str) -> dict[str, Any]:
+    if bool(loc.get("available")) and int(loc.get("port") or 0) > 0:
+        return {
+            "tag": out_tag,
+            "protocol": "socks",
+            "settings": {
+                "servers": [{
+                    "address": "10.60.0.1",
+                    "port": int(loc["port"]),
+                }]
+            },
+        }
+    # Keep the Host/Inbound pre-created without allowing accidental direct
+    # egress before the central gateway publishes a real config for it.
+    return {
+        "tag": out_tag,
+        "protocol": "blackhole",
+        "settings": {"response": {"type": "none"}},
+    }
 
 
 def _plan_stable_country_ports(
@@ -169,14 +239,19 @@ def _plan_stable_country_ports(
     assigned: dict[str, int] = {}
     for loc in locs:
         code = loc["country_code"]
-        if code in existing_by_country:
-            assigned[code] = int(existing_by_country[code])
-            continue
         preferred = PREFERRED_LOCAL_PORTS.get(code)
         if preferred is None:
             raise RuntimeError(f"preferred_port_missing_{code}")
+
+        owner = next(
+            (other for other, port in existing_by_country.items() if int(port) == int(preferred)),
+            None,
+        )
+        if owner and owner != code:
+            raise RuntimeError(f"preferred_port_owned_by_{owner}_{preferred}")
         if preferred in used or (preferred in live and preferred not in preserved):
             raise RuntimeError(f"preferred_port_conflict_{code}_{preferred}")
+
         assigned[code] = int(preferred)
         used.add(int(preferred))
     return assigned
@@ -318,9 +393,9 @@ class PasarGuardAdapter:
         outbounds = cfg.get("outbounds") or []
         rules = (cfg.get("routing") or {}).get("rules") or []
         hosts = self.get_hosts()
-        managed_inbounds = [x for x in inbounds if str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)]
+        managed_inbounds = [x for x in inbounds if _is_ganj_pasarguard_tag(str(x.get("tag") or ""))]
         managed_outbounds = [x for x in outbounds if str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
-        managed_hosts = [x for x in hosts if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)]
+        managed_hosts = [x for x in hosts if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))]
         return {
             "ok": True,
             "type": "pasarguard",
@@ -352,7 +427,7 @@ class PasarGuardAdapter:
         template = next((x for x in inbounds if x.get("tag") == self.template_inbound_tag), None)
         if not template:
             raise RuntimeError("pasarguard_template_inbound_not_found")
-        if str(template.get("tag") or "").startswith(GANJ_IN_PREFIX):
+        if _is_ganj_pasarguard_tag(str(template.get("tag") or "")):
             raise RuntimeError("pasarguard_template_must_be_dedicated_non_ganj_inbound")
         _require_vless(template)
         hosts = self.get_hosts()
@@ -362,14 +437,13 @@ class PasarGuardAdapter:
         existing_by_country: dict[str, int] = {}
         for row in inbounds:
             tag = str(row.get("tag") or "")
-            if tag.startswith(GANJ_IN_PREFIX) and row.get("port"):
-                code = tag[len(GANJ_IN_PREFIX):].upper()
-                if len(code) == 2:
-                    existing_by_country[code] = int(row["port"])
+            code = _country_from_pasarguard_tag(tag)
+            if code and row.get("port"):
+                existing_by_country[code] = int(row["port"])
         used = {
             int(x.get("port"))
             for x in inbounds
-            if x.get("port") and not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
+            if x.get("port") and not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))
         }
         assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
@@ -378,10 +452,11 @@ class PasarGuardAdapter:
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
-                "gateway_port": loc["port"],
+                "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
-                "inbound_tag": GANJ_IN_PREFIX + loc["country_code"].lower(),
+                "inbound_tag": _display_label(loc),
                 "host_clone": bool(template_host),
+                "available": bool(loc.get("available")),
             })
         return {
             "ok": True,
@@ -425,18 +500,18 @@ class PasarGuardAdapter:
             raise RuntimeError("pasarguard_template_host_not_found")
         old_managed_hosts = [
             copy.deepcopy(x) for x in hosts
-            if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)
+            if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))
         ]
 
         _atomic_backup("pasarguard-core", old_core)
         if old_managed_hosts:
             _atomic_backup("pasarguard-hosts", old_managed_hosts)
 
-        managed_tags = {GANJ_IN_PREFIX + x["country_code"].lower() for x in locs}
+        managed_tags = {_display_label(x) for x in locs}
         managed_out = {GANJ_OUT_PREFIX + x["country_code"].lower() for x in locs}
         inbounds[:] = [
             x for x in inbounds
-            if not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
+            if not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))
         ]
         outbounds[:] = [
             x for x in outbounds
@@ -445,14 +520,14 @@ class PasarGuardAdapter:
         rules[:] = [
             x for x in rules
             if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+            and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
         ]
 
         created = []
         for loc in locs:
             code = loc["country_code"]
             local_port = planned_ports[code]
-            in_tag = GANJ_IN_PREFIX + code.lower()
+            in_tag = _display_label(loc)
             out_tag = GANJ_OUT_PREFIX + code.lower()
 
             inbound = copy.deepcopy(template)
@@ -460,11 +535,7 @@ class PasarGuardAdapter:
             inbound["port"] = local_port
             inbounds.append(inbound)
 
-            outbounds.append({
-                "tag": out_tag,
-                "protocol": "socks",
-                "settings": {"servers": [{"address": "10.60.0.1", "port": int(loc["port"])}]},
-            })
+            outbounds.append(_gateway_outbound(loc, out_tag))
             rules.insert(0, {
                 "type": "field",
                 "inboundTag": [in_tag],
@@ -474,7 +545,8 @@ class PasarGuardAdapter:
                 "country_code": code,
                 "inbound_tag": in_tag,
                 "local_port": local_port,
-                "gateway_port": int(loc["port"]),
+                "gateway_port": int(loc["port"]) if loc.get("available") else None,
+                "available": bool(loc.get("available")),
             })
 
         core_applied = False
@@ -485,7 +557,7 @@ class PasarGuardAdapter:
             if template_host:
                 for h in self.get_hosts():
                     tag = str(h.get("inbound_tag") or "")
-                    if tag.startswith(GANJ_IN_PREFIX) and h.get("id"):
+                    if _is_ganj_pasarguard_tag(tag) and h.get("id"):
                         self.delete_host(int(h["id"]))
 
                 for item, loc in zip(created, locs):
@@ -513,7 +585,7 @@ class PasarGuardAdapter:
                 verify_hosts = {
                     str(x.get("inbound_tag") or "")
                     for x in self.get_hosts()
-                    if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)
+                    if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))
                 }
                 if not managed_tags.issubset(verify_hosts):
                     raise RuntimeError("pasarguard_post_install_host_verification_failed")
@@ -527,7 +599,7 @@ class PasarGuardAdapter:
                     self.update_core(old_core, copy.deepcopy(old_core.get("config") or {}))
                 if template_host:
                     for h in self.get_hosts():
-                        if str(h.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX) and h.get("id"):
+                        if _is_ganj_pasarguard_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                             self.delete_host(int(h["id"]))
                     for old in old_managed_hosts:
                         h = copy.deepcopy(old)
@@ -546,17 +618,17 @@ class PasarGuardAdapter:
         outbounds = config.setdefault("outbounds", [])
         rules = config.setdefault("routing", {}).setdefault("rules", [])
         before = len(inbounds)
-        inbounds[:] = [x for x in inbounds if not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)]
+        inbounds[:] = [x for x in inbounds if not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))]
         outbounds[:] = [x for x in outbounds if not str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
         rules[:] = [
             x for x in rules
             if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+            and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
         ]
         self.update_core(core, config)
         removed_hosts = 0
         for h in self.get_hosts():
-            if str(h.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX) and h.get("id"):
+            if _is_ganj_pasarguard_tag(str(h.get("inbound_tag") or "")) and h.get("id"):
                 self.delete_host(int(h["id"]))
                 removed_hosts += 1
         return {"ok": True, "removed_inbounds": before - len(inbounds), "removed_hosts": removed_hosts}
@@ -725,7 +797,7 @@ class SanaeiAdapter:
         template = next((x for x in rows if int(x.get("id") or 0) == self.template_inbound_id), None)
         if not template:
             raise RuntimeError("sanaei_template_inbound_not_found")
-        if str(template.get("remark") or "").startswith(GANJ_REMARK_PREFIX):
+        if _country_from_ganj_remark(str(template.get("remark") or "")):
             raise RuntimeError("sanaei_template_must_be_dedicated_non_ganj_inbound")
         _require_vless(template)
         existing_by_country: dict[str, int] = {}
@@ -736,7 +808,7 @@ class SanaeiAdapter:
         used = {
             int(x.get("port"))
             for x in rows
-            if x.get("port") and not str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)
+            if x.get("port") and not _country_from_ganj_remark(str(x.get("remark") or ""))
         }
         assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
@@ -745,9 +817,10 @@ class SanaeiAdapter:
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
-                "gateway_port": loc["port"],
+                "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
                 "template_inbound_id": self.template_inbound_id,
+                "available": bool(loc.get("available")),
             })
         return {"ok": True, "type": "sanaei", "items": items}
 
@@ -812,7 +885,8 @@ class SanaeiAdapter:
                 created.append({
                     "country_code": code,
                     "local_port": int(planned_ports[code]),
-                    "gateway_port": int(loc["port"]),
+                    "gateway_port": int(loc["port"]) if loc.get("available") else None,
+                    "available": bool(loc.get("available")),
                 })
 
             now_rows = self.list_inbounds()
@@ -831,7 +905,7 @@ class SanaeiAdapter:
             rules[:] = [
                 x for x in rules
                 if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-                and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+                and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
             ]
 
             for item, loc in zip(created, locs):
@@ -842,11 +916,7 @@ class SanaeiAdapter:
                 )
                 item["inbound_tag"] = inbound_tag
                 out_tag = GANJ_OUT_PREFIX + loc["country_code"].lower()
-                outbounds.append({
-                    "tag": out_tag,
-                    "protocol": "socks",
-                    "settings": {"servers": [{"address": "10.60.0.1", "port": int(loc["port"])}]},
-                })
+                outbounds.append(_gateway_outbound(loc, out_tag))
                 rules.insert(0, {"type": "field", "inboundTag": [inbound_tag], "outboundTag": out_tag})
 
             self.update_xray(cfg, test_url)

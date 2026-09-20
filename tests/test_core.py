@@ -26,13 +26,21 @@ class LocationTests(unittest.TestCase):
         self.assertIn("DE", ganj_vps.TOP_LOCATIONS)
         self.assertIn("US", ganj_vps.TOP_LOCATIONS)
 
-    def test_location_map_filters_disabled_and_bad_rows(self):
+    def test_location_map_keeps_unavailable_catalog_rows(self):
         rows = _location_map([
             {"country_code": "de", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "nl", "name": "Netherlands", "port": 1081, "enabled": False},
             {"country_code": "", "name": "Broken", "port": 1, "enabled": True},
         ])
-        self.assertEqual(rows, [{"country_code": "DE", "name": "Germany", "flag": "", "port": 1082}])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], {
+            "country_code": "DE", "name": "Germany", "city": "Berlin",
+            "flag": "🇩🇪", "port": 1082, "enabled": True, "available": True,
+        })
+        self.assertEqual(rows[1], {
+            "country_code": "NL", "name": "Netherlands", "city": "Amsterdam",
+            "flag": "🇳🇱", "port": 1081, "enabled": False, "available": False,
+        })
 
     def test_port_allocator_does_not_collide(self):
         used = {20000, 20002}
@@ -88,14 +96,46 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual(len(result["installed"]), 2)
         tags = {x["tag"] for x in cfg["inbounds"]}
         self.assertIn("template", tags)
-        self.assertIn("ganj-de", tags)
-        self.assertIn("ganj-nl", tags)
+        self.assertIn("🇩🇪 Germany — Berlin", tags)
+        self.assertIn("🇳🇱 Netherlands — Amsterdam", tags)
         outbound_tags = {x["tag"] for x in cfg["outbounds"]}
         self.assertIn("direct", outbound_tags)
         self.assertIn("ganj-egress-de", outbound_tags)
         self.assertIn("ganj-egress-nl", outbound_tags)
         socks = next(x for x in cfg["outbounds"] if x["tag"] == "ganj-egress-de")
         self.assertEqual(socks["settings"]["servers"][0], {"address": "10.60.0.1", "port": 1082})
+
+
+    @without_live_ports
+    def test_unavailable_location_creates_safe_placeholder(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-placeholder-test-"))
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 0, "base_port": 6000,
+        })
+        adapter.login = lambda: None
+        core = {
+            "name": "main", "type": "xray",
+            "exclude_inbound_tags": [], "fallbacks_inbound_tags": [],
+            "config": {
+                "inbounds": [{"tag": "template", "port": 443, "protocol": "vless", "settings": {}}],
+                "outbounds": [], "routing": {"rules": []},
+            },
+        }
+        adapter.get_core = lambda: core
+        adapter.get_hosts = lambda: []
+        adapter.update_core = lambda c, config: core.update({"config": config})
+        result = adapter.install_locations([
+            {"country_code": "NL", "name": "Netherlands", "port": 0, "enabled": False},
+        ])
+        placeholder = next(x for x in core["config"]["inbounds"] if x.get("tag") == "🇳🇱 Netherlands — Amsterdam")
+        self.assertEqual(placeholder["port"], 6001)
+        outbound = next(x for x in core["config"]["outbounds"] if x.get("tag") == "ganj-egress-nl")
+        self.assertEqual(outbound["protocol"], "blackhole")
+        self.assertFalse(result["installed"][0]["available"])
+        self.assertIsNone(result["installed"][0]["gateway_port"])
 
 
     @without_live_ports
@@ -140,12 +180,15 @@ class PasarGuardGenerationTests(unittest.TestCase):
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
         ])
-        self.assertEqual([x["port"] for x in created_hosts], [4443, 2443])
-        self.assertEqual([x["inbound_tag"] for x in created_hosts], ["ganj-de", "ganj-nl"])
+        self.assertEqual([x["port"] for x in created_hosts], [6000, 6001])
+        self.assertEqual(
+            [x["inbound_tag"] for x in created_hosts],
+            ["🇩🇪 Germany — Berlin", "🇳🇱 Netherlands — Amsterdam"],
+        )
         self.assertEqual(len(result["installed"]), 2)
 
 
-    def test_repeated_pasarguard_plan_preserves_existing_country_ports(self):
+    def test_repeated_pasarguard_plan_migrates_to_catalog_ports(self):
         adapter = PasarGuardAdapter({
             "url": "http://127.0.0.1:8000",
             "username": "test", "password": "test",
@@ -174,7 +217,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
             ])
         finally:
             panel_sync.system_listening_ports = old
-        self.assertEqual([x["local_port"] for x in plan["items"]], [22010, 22011])
+        self.assertEqual([x["local_port"] for x in plan["items"]], [6000, 6001])
 
 
     def test_pasarguard_host_failure_restores_previous_core_and_hosts(self):
@@ -212,7 +255,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         fail_once = [True]
         next_id = [100]
         def create_host(host):
-            if fail_once[0] and str(host.get("inbound_tag") or "") == "ganj-de":
+            if fail_once[0] and panel_sync._country_from_pasarguard_tag(str(host.get("inbound_tag") or "")) == "DE":
                 fail_once[0] = False
                 raise RuntimeError("simulated_host_failure")
             row = copy.deepcopy(host); row["id"] = next_id[0]; next_id[0] += 1
@@ -263,15 +306,18 @@ class SanaeiGenerationTests(unittest.TestCase):
             {"country_code": "FR", "name": "France", "port": 1080, "enabled": True},
         ])
         managed = [x for x in inbounds if panel_sync._country_from_ganj_remark(str(x.get("remark", "")))]
-        self.assertEqual([x["port"] for x in managed], [4443, 1443])
-        self.assertEqual([x["remark"] for x in managed], ["🇩🇪 Germany", "🇫🇷 France dc"])
+        self.assertEqual([x["port"] for x in managed], [6000, 6002])
+        self.assertEqual(
+            [x["remark"] for x in managed],
+            ["🇩🇪 Germany — Berlin", "🇫🇷 France — Paris"],
+        )
         self.assertEqual(len(result["installed"]), 2)
         tags = {x.get("tag") for x in xray["outbounds"]}
         self.assertIn("ganj-egress-de", tags)
         self.assertIn("ganj-egress-fr", tags)
 
 
-    def test_repeated_sanaei_plan_preserves_existing_country_ports(self):
+    def test_repeated_sanaei_plan_migrates_to_catalog_ports(self):
         adapter = SanaeiAdapter({
             "url": "http://127.0.0.1:2053",
             "username": "test", "password": "test",
@@ -293,7 +339,7 @@ class SanaeiGenerationTests(unittest.TestCase):
             ])
         finally:
             panel_sync.system_listening_ports = old
-        self.assertEqual([x["local_port"] for x in plan["items"]], [22100, 22101])
+        self.assertEqual([x["local_port"] for x in plan["items"]], [6000, 6002])
 
 
     @without_live_ports
@@ -332,23 +378,24 @@ class SanaeiGenerationTests(unittest.TestCase):
         de = next(x for x in rows if panel_sync._country_from_ganj_remark(str(x.get("remark",""))) == "DE")
         fr = next(x for x in rows if panel_sync._country_from_ganj_remark(str(x.get("remark",""))) == "FR")
         self.assertEqual(de["id"], 30)
-        self.assertEqual(de["port"], 22100)
-        self.assertEqual(fr["port"], 1443)
+        self.assertEqual(de["port"], 6000)
+        self.assertEqual(fr["port"], 6002)
         self.assertEqual(len(result["installed"]), 2)
 
 
     @without_live_ports
     def test_requested_public_names_and_ports(self):
-        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["FR"], 1443)
-        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["NL"], 2443)
-        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["GB"], 3443)
-        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["DE"], 4443)
-        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["US"], 9443)
-        self.assertEqual(panel_sync.DISPLAY_LABELS["FR"], "🇫🇷 France dc")
-        self.assertEqual(panel_sync.DISPLAY_LABELS["NL"], "🇳🇱 The Netherlands")
-        self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany")
-        self.assertEqual(panel_sync.DISPLAY_LABELS["US"], "🇺🇸 United States")
-        self.assertEqual(panel_sync.DISPLAY_LABELS["GB"], "🇬🇧 United Kingdom")
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["DE"], 6000)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["NL"], 6001)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["FR"], 6002)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["GB"], 6003)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["US"], 6022)
+        self.assertLessEqual(max(panel_sync.PREFERRED_LOCAL_PORTS.values()), 6030)
+        self.assertEqual(panel_sync.DISPLAY_LABELS["FR"], "🇫🇷 France — Paris")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["NL"], "🇳🇱 Netherlands — Amsterdam")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany — Berlin")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["US"], "🇺🇸 United States — Washington, D.C.")
+        self.assertEqual(panel_sync.DISPLAY_LABELS["GB"], "🇬🇧 United Kingdom — London")
 
     def test_non_vless_template_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "template_protocol_must_be_vless"):
