@@ -21,8 +21,10 @@ from typing import Any
 
 import requests
 
+from panel_sync import adapter_from_profile, detect_sanaei_local
+
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -72,6 +74,136 @@ def load_json(path: Path, default: Any = None) -> Any:
 
 def save_json(path: Path, data: dict[str, Any], mode: int = 0o600) -> None:
     atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", mode)
+
+
+def panel_profile() -> dict[str, Any]:
+    data = load_json(PANEL_SECRET_FILE, {})
+    if not isinstance(data, dict) or not data.get("type"):
+        raise RuntimeError("panel_not_configured")
+    return data
+
+def _ask(prompt: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{prompt}{suffix}: ").strip()
+    return value or default
+
+def _detect_pasarguard_local_url() -> str:
+    for path in (Path("/opt/pasarguard/.env"), Path("/opt/PasarGuard/.env"), Path("/etc/pasarguard/.env"), Path("/etc/PasarGuard/.env")):
+        if not path.is_file():
+            continue
+        try:
+            vals: dict[str, str] = {}
+            for line in path.read_text(errors="ignore").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                vals[k.strip()] = v.strip().strip('"').strip("'")
+            host = vals.get("UVICORN_HOST") or "127.0.0.1"
+            if host in {"0.0.0.0", "::", ""}:
+                host = "127.0.0.1"
+            port = vals.get("UVICORN_PORT") or "8000"
+            scheme = "https" if vals.get("UVICORN_SSL_CERTFILE") else "http"
+            return f"{scheme}://{host}:{port}"
+        except Exception:
+            continue
+    return "http://127.0.0.1:8000"
+
+def configure_panel() -> int:
+    detected = detect_panel()
+    print(f"Detected: {detected['name']}")
+    kind = detected.get("type") or "unknown"
+    if kind == "sanaei":
+        auto = detect_sanaei_local()
+        profile = dict(auto or {})
+        if not profile:
+            profile = {"type": "sanaei"}
+            profile["url"] = _ask("Panel URL", "http://127.0.0.1:2053")
+            user = _ask("Admin username")
+            password = getpass.getpass("Admin password: ")
+            profile.update({"username": user, "password": password, "verify_tls": False})
+        profile["template_inbound_id"] = int(_ask("Template inbound ID to clone"))
+        profile["base_port"] = int(_ask("First local port", "20000"))
+    elif kind == "pasarguard":
+        profile = {
+            "type": "pasarguard",
+            "url": _ask("PasarGuard URL", _detect_pasarguard_local_url()),
+            "username": _ask("Admin username"),
+            "password": getpass.getpass("Admin password: "),
+            "core_id": int(_ask("Core ID", "1")),
+            "template_inbound_tag": _ask("Template inbound tag to clone"),
+            "template_host_id": int(_ask("Template Host ID (0 = do not clone host)", "0")),
+            "base_port": int(_ask("First local port", "20000")),
+            "verify_tls": False,
+        }
+    else:
+        kind = _ask("Panel type (sanaei/pasarguard)").lower()
+        if kind not in {"sanaei", "pasarguard"}:
+            raise RuntimeError("unsupported_panel")
+        print("Panel was not auto-detected; configure after installing the panel.")
+        return 1
+
+    adapter = adapter_from_profile(profile)
+    result = adapter.status()
+    save_json(PANEL_SECRET_FILE, profile, 0o600)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print("[+] Panel profile verified and stored locally.")
+    return 0
+
+def panel_status() -> int:
+    profile = panel_profile()
+    result = adapter_from_profile(profile).status()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+def central_locations() -> list[dict[str, Any]]:
+    cfg = AgentConfig.load()
+    data = CentralClient(cfg).desired()
+    locations = ((data.get("gateway") or {}).get("locations") or [])
+    return [x for x in locations if x.get("enabled") and str(x.get("country_code") or "") in TOP_LOCATIONS]
+
+def locations_list() -> int:
+    rows = central_locations()
+    for x in rows:
+        print(f"{x.get('country_code','--'):>2}  :{x.get('port','—'):<5}  {x.get('name','')}")
+    print(f"\n{len(rows)} locations")
+    return 0
+
+def locations_install(assume_yes: bool = False) -> int:
+    if not wg_status().get("up"):
+        raise RuntimeError("wireguard_not_connected")
+    profile = panel_profile()
+    rows = central_locations()
+    if not rows:
+        raise RuntimeError("no_enabled_locations")
+    if not assume_yes:
+        answer = input(f"Install/update {len(rows)} GANJ locations in the panel? [y/N] ").strip().lower()
+        if answer != "y":
+            return 0
+    adapter = adapter_from_profile(profile)
+    result = adapter.install_locations(rows)
+    cfg = AgentConfig.load()
+    CentralClient(cfg).report({
+        "status": "online",
+        "data": {"operation": "locations_install", "installed": len(result.get("installed") or [])},
+    })
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+def locations_remove(assume_yes: bool = False) -> int:
+    profile = panel_profile()
+    if not assume_yes:
+        answer = input("Remove only GANJ-managed locations from the panel? [y/N] ").strip().lower()
+        if answer != "y":
+            return 0
+    result = adapter_from_profile(profile).remove_locations()
+    try:
+        cfg = AgentConfig.load()
+        CentralClient(cfg).report({"status": "online", "data": {"operation": "locations_remove"}})
+    except Exception:
+        pass
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
 def machine_fingerprint() -> str:
     pieces = [socket.gethostname(), platform.machine()]
@@ -350,7 +482,9 @@ def status() -> int:
 def update_self() -> int:
     installer = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/install.sh"
     print("[~] Updating GANJ VPS from the official repository...")
-    p = subprocess.run(["bash", "-c", f"curl -fsSL {installer} | GANJ_ENROLL_TOKEN='' bash"], text=True)
+    env = os.environ.copy()
+    env["GANJ_SKIP_ENROLL"] = "1"
+    p = subprocess.run(["bash", "-c", f"curl -fsSL {installer} | bash"], text=True, env=env)
     return p.returncode
 
 def uninstall() -> int:
@@ -379,28 +513,40 @@ def menu() -> int:
         print(f"Panel: {panel['name']}")
         print()
         print("[1] Status")
-        print("[2] Detect panel")
-        print("[3] Sync with central")
-        print("[4] WireGuard status")
-        print("[5] Diagnostics")
-        print("[6] Update")
-        print("[7] Uninstall")
+        print("[2] Configure / verify panel")
+        print("[3] Panel status")
+        print("[4] Install / sync 30 locations")
+        print("[5] Remove GANJ locations")
+        print("[6] Location catalog")
+        print("[7] Sync with central")
+        print("[8] WireGuard status")
+        print("[9] Diagnostics")
+        print("[10] Update")
+        print("[11] Uninstall")
         print("[0] Exit")
         choice = input("> ").strip()
         try:
             if choice == "1":
                 status()
             elif choice == "2":
-                print(json.dumps(detect_panel(), ensure_ascii=False, indent=2))
+                configure_panel()
             elif choice == "3":
-                print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
+                panel_status()
             elif choice == "4":
-                print(json.dumps(wg_status(), ensure_ascii=False, indent=2))
+                locations_install()
             elif choice == "5":
-                diagnostics()
+                locations_remove()
             elif choice == "6":
-                return update_self()
+                locations_list()
             elif choice == "7":
+                print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
+            elif choice == "8":
+                print(json.dumps(wg_status(), ensure_ascii=False, indent=2))
+            elif choice == "9":
+                diagnostics()
+            elif choice == "10":
+                return update_self()
+            elif choice == "11":
                 return uninstall()
             elif choice == "0":
                 return 0
@@ -420,6 +566,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("sync")
     sub.add_parser("update")
     sub.add_parser("uninstall")
+    pc = sub.add_parser("panel-configure")
+    sub.add_parser("panel-status")
+    li = sub.add_parser("locations-install")
+    li.add_argument("--yes", action="store_true")
+    lr = sub.add_parser("locations-remove")
+    lr.add_argument("--yes", action="store_true")
+    sub.add_parser("locations-list")
     return p
 
 def main() -> int:
@@ -446,6 +599,16 @@ def main() -> int:
         if args.cmd == "sync":
             print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             return 0
+        if args.cmd == "panel-configure":
+            return configure_panel()
+        if args.cmd == "panel-status":
+            return panel_status()
+        if args.cmd == "locations-install":
+            return locations_install(bool(args.yes))
+        if args.cmd == "locations-remove":
+            return locations_remove(bool(args.yes))
+        if args.cmd == "locations-list":
+            return locations_list()
         if args.cmd == "update":
             return update_self()
         if args.cmd == "uninstall":
