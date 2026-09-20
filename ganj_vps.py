@@ -377,18 +377,52 @@ def locations_install(assume_yes: bool = False) -> int:
     rows = central_locations()
     if not rows:
         raise RuntimeError("no_enabled_locations")
+
+    adapter = adapter_from_profile(profile)
+    plan = adapter.plan_locations(rows)
+    items = plan.get("items") or []
+    if len(items) != len(rows):
+        raise RuntimeError("location_plan_incomplete")
+
+    print("\nGANJ VPS · Install Plan")
+    print("  CC  Local Port  Gateway Port  Host")
+    print("  --  ----------  ------------  --------")
+    for item in items:
+        host_text = "clone" if item.get("host_clone") else ("—" if profile.get("type") == "pasarguard" else "n/a")
+        print(
+            f"  {str(item.get('country_code') or ''):<2}  "
+            f"{str(item.get('local_port') or ''):<10}  "
+            f"{str(item.get('gateway_port') or ''):<12}  {host_text}"
+        )
+
     if not assume_yes:
-        answer = input(f"Install/update {len(rows)} GANJ locations in the panel? [y/N] ").strip().lower()
+        answer = input(f"\nApply {len(rows)} location(s) to the panel? [y/N] ").strip().lower()
         if answer != "y":
             return 0
-    adapter = adapter_from_profile(profile)
+
     result = adapter.install_locations(rows)
+    verified = adapter.status()
+    expected = len(rows)
+    if int(verified.get("managed_inbounds") or 0) != expected:
+        raise RuntimeError("post_install_inbound_verification_failed")
+    if profile.get("type") == "pasarguard" and int(profile.get("template_host_id") or 0):
+        if int(verified.get("managed_hosts") or 0) != expected:
+            raise RuntimeError("post_install_host_verification_failed")
+
     cfg = AgentConfig.load()
     CentralClient(cfg).report({
         "status": "online",
-        "data": {"operation": "locations_install", "installed": len(result.get("installed") or [])},
+        "data": {
+            "operation": "locations_install",
+            "installed": len(result.get("installed") or []),
+            "managed_inbounds": verified.get("managed_inbounds"),
+            "managed_hosts": verified.get("managed_hosts"),
+        },
     })
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"\n[+] Installed and verified: {expected} location(s).")
+    print(f"    Managed inbounds: {verified.get('managed_inbounds', 0)}")
+    if profile.get("type") == "pasarguard":
+        print(f"    Managed hosts:    {verified.get('managed_hosts', 0)}")
     return 0
 
 def locations_remove(assume_yes: bool = False) -> int:
