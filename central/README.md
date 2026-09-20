@@ -18,6 +18,24 @@ The dashboard shows, per representative:
 
 Raw enrollment tokens are returned only once. The database stores SHA-256 hashes.
 
+## Server and IP binding
+
+Each successful enrollment is permanently bound to the representative panel's
+public source IP, server fingerprint, and WireGuard public key. The same
+enrollment token cannot be reused on a second server.
+
+If the public IP or server identity changes, use **Rotate / Change server-IP**
+from the representatives panel. Rotation:
+
+- revokes the currently connected panel and removes its WireGuard peer
+- marks all previous pending/used tokens as revoked
+- issues one new one-time token for the same representative
+- preserves representative traffic usage, traffic limit, and license expiry
+
+An unexpected IP or fingerprint change is locked as `ip_mismatch` or
+`identity_mismatch` and requires operator rotation. Copying Agent files or a
+node secret to another server therefore does not transfer access.
+
 ## Required environment
 
 Create `/etc/ganj-central/central.env`:
@@ -56,6 +74,8 @@ Put the service behind HTTPS reverse proxy. The admin UI is available at `/admin
 - operator access uses a separate admin credential and an HttpOnly signed session cookie
 - node authentication uses per-node secrets
 - enrollment tokens are one-time and hashed at rest
+- enrollments are bound to one public IP + server fingerprint + WireGuard key
+- IP/identity mismatch locks require explicit operator rotation
 - raw upstream credentials are never returned by this service
 - node commands remain allow-listed by the agent
 - quota/expiry state is evaluated separately from enrollment-token state
