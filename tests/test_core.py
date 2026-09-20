@@ -406,6 +406,27 @@ class PasarGuardGenerationTests(unittest.TestCase):
             panel_sync._is_ganj_pasarguard_owned_tag("🇺🇸 United States")
         )
 
+    def test_pasarguard_restart_disconnect_is_recovered_by_readback(self):
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 0, "base_port": 6000,
+        })
+        class BrokenSession:
+            def put(self, *args, **kwargs):
+                raise panel_sync.requests.ConnectionError("restart closed socket")
+        adapter.s = BrokenSession()
+        seen = []
+        adapter._wait_core_after_restart = lambda cfg, timeout=75: seen.append(copy.deepcopy(cfg))
+        core = {
+            "name": "main", "type": "xray",
+            "exclude_inbound_tags": [], "fallbacks_inbound_tags": [],
+        }
+        cfg = {"inbounds": [{"tag": "ganj-de", "port": 6000}]}
+        adapter._put_core(core, cfg, restart_nodes=True)
+        self.assertEqual(seen, [cfg])
+
     @without_live_ports
     def test_install_generates_only_ganj_owned_objects(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-test-"))
