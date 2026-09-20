@@ -173,19 +173,113 @@ class PasarGuardAdapter:
         r = self.s.post(f"{self.base}/api/host/", json=host, timeout=15)
         r.raise_for_status()
 
-    def status(self) -> dict[str, Any]:
+    def discover(self) -> dict[str, Any]:
         self.login()
         core = self.get_core()
         cfg = core.get("config") or {}
+        inbounds = []
+        for i, row in enumerate(cfg.get("inbounds") or [], 1):
+            inbounds.append({
+                "index": i,
+                "tag": str(row.get("tag") or ""),
+                "port": int(row.get("port") or 0),
+                "protocol": _protocol_name(row),
+                "listen": _listen_text(row),
+            })
+        hosts = []
+        for i, row in enumerate(self.get_hosts(), 1):
+            hosts.append({
+                "index": i,
+                "id": int(row.get("id") or 0),
+                "remark": str(row.get("remark") or ""),
+                "inbound_tag": str(row.get("inbound_tag") or ""),
+                "port": row.get("port"),
+                "address": sorted(row.get("address") or []) if isinstance(row.get("address"), (set, list, tuple)) else row.get("address"),
+            })
+        return {
+            "ok": True,
+            "type": "pasarguard",
+            "core": {
+                "id": self.core_id,
+                "name": core.get("name") or f"Core {self.core_id}",
+                "type": core.get("type") or "xray",
+            },
+            "inbounds": inbounds,
+            "hosts": hosts,
+        }
+
+    def managed_status(self) -> dict[str, Any]:
+        self.login()
+        core = self.get_core()
+        cfg = core.get("config") or {}
+        inbounds = cfg.get("inbounds") or []
+        outbounds = cfg.get("outbounds") or []
+        rules = (cfg.get("routing") or {}).get("rules") or []
         hosts = self.get_hosts()
+        managed_inbounds = [x for x in inbounds if str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)]
+        managed_outbounds = [x for x in outbounds if str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
+        managed_hosts = [x for x in hosts if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)]
         return {
             "ok": True,
             "type": "pasarguard",
             "core_id": self.core_id,
-            "inbounds": len(cfg.get("inbounds") or []),
-            "outbounds": len(cfg.get("outbounds") or []),
+            "template_inbound_tag": self.template_inbound_tag,
+            "template_host_id": self.template_host_id,
+            "base_port": self.base_port,
+            "inbounds": len(inbounds),
+            "outbounds": len(outbounds),
             "hosts": len(hosts),
+            "managed_inbounds": len(managed_inbounds),
+            "managed_outbounds": len(managed_outbounds),
+            "managed_hosts": len(managed_hosts),
+            "managed_rules": sum(
+                1 for x in rules
+                if str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
+            ),
+            "managed_ports": sorted(int(x.get("port") or 0) for x in managed_inbounds if x.get("port")),
         }
+
+    def plan_locations(self, locations: list[dict[str, Any]]) -> dict[str, Any]:
+        self.login()
+        locs = _location_map(locations)
+        if not locs:
+            raise RuntimeError("no_locations")
+        core = self.get_core()
+        cfg = core.get("config") or {}
+        inbounds = cfg.get("inbounds") or []
+        template = next((x for x in inbounds if x.get("tag") == self.template_inbound_tag), None)
+        if not template:
+            raise RuntimeError("pasarguard_template_inbound_not_found")
+        hosts = self.get_hosts()
+        template_host = next((x for x in hosts if int(x.get("id") or 0) == self.template_host_id), None)
+        if self.template_host_id and not template_host:
+            raise RuntimeError("pasarguard_template_host_not_found")
+        used = {
+            int(x.get("port"))
+            for x in inbounds
+            if x.get("port") and not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
+        }
+        ports = choose_port_block(used, len(locs), self.base_port)
+        items = []
+        for loc, local_port in zip(locs, ports):
+            items.append({
+                "country_code": loc["country_code"],
+                "name": loc["name"],
+                "gateway_port": loc["port"],
+                "local_port": local_port,
+                "inbound_tag": GANJ_IN_PREFIX + loc["country_code"].lower(),
+                "host_clone": bool(template_host),
+            })
+        return {
+            "ok": True,
+            "type": "pasarguard",
+            "template_inbound_tag": self.template_inbound_tag,
+            "template_host_id": self.template_host_id,
+            "items": items,
+        }
+
+    def status(self) -> dict[str, Any]:
+        return self.managed_status()
 
     def install_locations(self, locations: list[dict[str, Any]]) -> dict[str, Any]:
         self.login()
