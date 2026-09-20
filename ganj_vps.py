@@ -30,7 +30,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -60,6 +60,38 @@ TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
 _WG_RATE_STATE: dict[str, float | int] = {}
 _LOCATION_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "signature": "", "rows": []}
+
+_TTY = bool(getattr(sys.stdout, "isatty", lambda: False)())
+_RESET = "\033[0m" if _TTY else ""
+_BOLD = "\033[1m" if _TTY else ""
+_DIM = "\033[2m" if _TTY else ""
+_GOLD = "\033[38;2;245;190;64m" if _TTY else ""
+_GOLD2 = "\033[38;2;255;215;96m" if _TTY else ""
+_EMERALD = "\033[38;2;16;185;129m" if _TTY else ""
+_EMERALD2 = "\033[38;2;52;211;153m" if _TTY else ""
+_RED = "\033[38;2;248;113;113m" if _TTY else ""
+
+def _ui_title(title: str, subtitle: str = "") -> None:
+    print(f"{_GOLD}{_BOLD}╭──────────────────────────────────────────────────────╮{_RESET}")
+    print(f"{_GOLD2}{_BOLD}│  ◆ GANJ VPS{_RESET}  {_EMERALD}{title:<40}{_GOLD}│{_RESET}")
+    if subtitle:
+        print(f"{_GOLD}│{_RESET}  {_DIM}{subtitle[:50]:<50}{_RESET}  {_GOLD}│{_RESET}")
+    print(f"{_EMERALD}{_BOLD}╰──────────────────────────────────────────────────────╯{_RESET}")
+
+def _ui_ok(message: str) -> None:
+    print(f"{_EMERALD2}  ◆{_RESET} {message}")
+
+def _ui_step(message: str) -> None:
+    print(f"{_GOLD}  ◇{_RESET} {message}")
+
+def _ui_warn(message: str) -> None:
+    print(f"{_GOLD2}  !{_RESET} {message}")
+
+def _ui_error(message: str) -> None:
+    print(f"{_RED}  ✕{_RESET} {message}")
+
+def _ui_prompt(label: str) -> str:
+    return f"{_EMERALD}{label} › {_RESET}"
 
 def run(cmd: list[str], timeout: int = 20, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=check)
