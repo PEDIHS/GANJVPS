@@ -39,6 +39,11 @@ tar -xzf "$ARCHIVE" -C "$TMP_DIR/src" --strip-components=1
 if [[ -d "$INSTALL_DIR" ]]; then
   stamp="$(date +%Y%m%d-%H%M%S)"
   cp -a "$INSTALL_DIR" "${INSTALL_DIR}.bak-${stamp}"
+  # Keep only the three newest application backups to avoid silent disk growth.
+  mapfile -t old_backups < <(find "$(dirname "$INSTALL_DIR")" -maxdepth 1 -mindepth 1 -type d -name "$(basename "$INSTALL_DIR").bak-*" -printf '%T@ %p\n' 2>/dev/null | sort -rn | awk 'NR>3{sub(/^[^ ]+ /,""); print}')
+  for old_backup in "${old_backups[@]:-}"; do
+    [[ -n "$old_backup" ]] && rm -rf -- "$old_backup"
+  done
 fi
 
 mkdir -p "$INSTALL_DIR" "$ETC_DIR" "$STATE_DIR" "$RUN_DIR"
