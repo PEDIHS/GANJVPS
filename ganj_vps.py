@@ -1897,26 +1897,22 @@ def menu() -> int:
     while True:
         os.system("clear")
         panel = detect_panel()
-        print("╭────────────────────────────────────────╮")
-        print("│              GANJ VPS                  │")
-        print("│        Secure Node Controller          │")
-        print("╰────────────────────────────────────────╯")
-        print(f"Panel: {panel['name']}")
+        _ui_title("NODE CONTROLLER", f"v{APP_VERSION} · {panel['name']}")
+        print(f"  {_GOLD}01{_RESET}  Live status               {_DIM}traffic · ping · connections{_RESET}")
+        print(f"  {_GOLD}02{_RESET}  Configure panel           {_DIM}auto detect / verify{_RESET}")
+        print(f"  {_GOLD}03{_RESET}  Panel status              {_DIM}managed objects{_RESET}")
+        print(f"  {_GOLD}04{_RESET}  Sync 30 locations         {_DIM}ports 6000–6029{_RESET}")
+        print(f"  {_GOLD}05{_RESET}  Remove GANJ locations")
+        print(f"  {_GOLD}06{_RESET}  Location catalog")
+        print(f"  {_GOLD}07{_RESET}  Sync with control plane")
+        print(f"  {_GOLD}08{_RESET}  Gateways / Best Ping")
+        print(f"  {_GOLD}09{_RESET}  WireGuard status")
+        print(f"  {_GOLD}10{_RESET}  Diagnostics")
+        print(f"  {_GOLD}11{_RESET}  Update")
+        print(f"  {_RED}12{_RESET}  Uninstall")
+        print(f"  {_DIM}00  Exit{_RESET}")
         print()
-        print("[1] Live Status")
-        print("[2] Configure / verify panel")
-        print("[3] Panel status")
-        print("[4] Install / sync 30 locations")
-        print("[5] Remove GANJ locations")
-        print("[6] Location catalog")
-        print("[7] Sync with central")
-        print("[8] Gateways / Best Ping")
-        print("[9] WireGuard status")
-        print("[10] Diagnostics")
-        print("[11] Update")
-        print("[12] Uninstall")
-        print("[0] Exit")
-        choice = input("> ").strip()
+        choice = input(_ui_prompt("Select")).strip().lstrip("0") or "0"
         try:
             if choice == "1":
                 status(watch=True)
@@ -1934,7 +1930,6 @@ def menu() -> int:
                 print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             elif choice == "8":
                 gateways_list()
-                print("\nUse CLI: ganj-vps gateway-switch best")
             elif choice == "9":
                 print(json.dumps(wg_status(), ensure_ascii=False, indent=2))
             elif choice == "10":
@@ -1945,9 +1940,11 @@ def menu() -> int:
                 return uninstall()
             elif choice == "0":
                 return 0
+            else:
+                _ui_warn("Unknown menu option")
         except Exception as exc:
-            print(f"[-] {type(exc).__name__}: {exc}")
-        input("\nPress Enter...")
+            _ui_error(f"{type(exc).__name__}: {exc}")
+        input(f"\n{_DIM}Press Enter to return to menu...{_RESET}")
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ganj-vps")
@@ -1964,6 +1961,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("uninstall")
     pc = sub.add_parser("panel-configure")
     pc.add_argument("--manual", action="store_true")
+    pc.add_argument("--auto", action="store_true")
     sub.add_parser("panel-detect")
     sub.add_parser("panel-status")
     sub.add_parser("panel-inbounds")
@@ -2010,7 +2008,7 @@ def main() -> int:
             print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             return 0
         if args.cmd == "panel-configure":
-            return configure_panel(bool(args.manual))
+            return configure_panel(bool(args.manual), bool(args.auto))
         if args.cmd == "panel-detect":
             print(json.dumps({"items": detect_panels()}, ensure_ascii=False, indent=2))
             return 0
@@ -2046,7 +2044,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
-        print(f"[-] {type(exc).__name__}: {exc}", file=sys.stderr)
+        _ui_error(f"{type(exc).__name__}: {exc}")
         return 1
 
 if __name__ == "__main__":
