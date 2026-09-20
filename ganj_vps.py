@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,9 @@ AUTO_UPDATE_CHECK_INTERVAL = 3600
 REMOTE_AGENT_URL = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/ganj_vps.py"
 
 TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
+
+_WG_RATE_STATE: dict[str, float | int] = {}
+_LOCATION_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "signature": "", "rows": []}
 
 def run(cmd: list[str], timeout: int = 20, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=check)
@@ -1150,6 +1154,178 @@ def gateway_tunnel_ok() -> bool:
     except Exception:
         pass
     return False
+
+
+def _wg_transfer_bytes() -> tuple[int, int] | None:
+    p = run(["wg", "show", "ganj-vps", "transfer"], timeout=5)
+    if p.returncode != 0:
+        return None
+    rx = tx = 0
+    found = False
+    for row in p.stdout.splitlines():
+        parts = row.split()
+        if len(parts) < 3:
+            continue
+        try:
+            rx += int(parts[-2])
+            tx += int(parts[-1])
+            found = True
+        except ValueError:
+            continue
+    return (rx, tx) if found else None
+
+
+def wireguard_rate_mbps() -> dict[str, float]:
+    sample = _wg_transfer_bytes()
+    now = time.monotonic()
+    if sample is None:
+        return {"rx_mbps": 0.0, "tx_mbps": 0.0, "total_mbps": 0.0}
+    rx, tx = sample
+    prev_at = float(_WG_RATE_STATE.get("at") or 0.0)
+    prev_rx = int(_WG_RATE_STATE.get("rx") or rx)
+    prev_tx = int(_WG_RATE_STATE.get("tx") or tx)
+    _WG_RATE_STATE.update({"at": now, "rx": rx, "tx": tx})
+    elapsed = now - prev_at
+    if prev_at <= 0 or elapsed <= 0:
+        return {"rx_mbps": 0.0, "tx_mbps": 0.0, "total_mbps": 0.0}
+    rx_rate = max(0.0, (rx - prev_rx) * 8 / elapsed / 1_000_000)
+    tx_rate = max(0.0, (tx - prev_tx) * 8 / elapsed / 1_000_000)
+    return {
+        "rx_mbps": round(rx_rate, 2),
+        "tx_mbps": round(tx_rate, 2),
+        "total_mbps": round(rx_rate + tx_rate, 2),
+    }
+
+
+def _socket_token_port(token: str) -> int | None:
+    raw = str(token or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("[") and "]:" in raw:
+        raw = raw.rsplit(":", 1)[-1]
+    elif ":" in raw:
+        raw = raw.rsplit(":", 1)[-1]
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def established_connections_by_port(ports: set[int]) -> dict[int, int]:
+    counts = {int(p): 0 for p in ports}
+    if not counts:
+        return counts
+    p = run(["ss", "-Htn", "state", "established"], timeout=5)
+    if p.returncode != 0:
+        return counts
+    for line in p.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        # In ss output the local endpoint is normally the penultimate endpoint
+        # token. Scan from left to right and count the first managed local port.
+        for token in parts:
+            port = _socket_token_port(token)
+            if port in counts:
+                counts[port] += 1
+                break
+    return counts
+
+
+def socks5_latency_ms(
+    proxy_host: str,
+    proxy_port: int,
+    target_host: str = "1.1.1.1",
+    target_port: int = 443,
+    timeout: float = LOCATION_PROBE_TIMEOUT,
+) -> float | None:
+    started = time.monotonic()
+    try:
+        with socket.create_connection((proxy_host, int(proxy_port)), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(b"\x05\x01\x00")
+            if s.recv(2) != b"\x05\x00":
+                return None
+            target_ip = socket.inet_aton(target_host)
+            req = b"\x05\x01\x00\x01" + target_ip + int(target_port).to_bytes(2, "big")
+            s.sendall(req)
+            head = s.recv(4)
+            if len(head) < 4 or head[1] != 0x00:
+                return None
+        return round((time.monotonic() - started) * 1000, 1)
+    except (OSError, ValueError):
+        return None
+
+
+def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = locations_from_desired(desired)
+    signature = locations_signature(rows)
+    now = time.monotonic()
+    cached_at = float(_LOCATION_PROBE_CACHE.get("at") or 0.0)
+    if (
+        _LOCATION_PROBE_CACHE.get("signature") == signature
+        and now - cached_at < LOCATION_PROBE_INTERVAL
+    ):
+        probes = {
+            str(x.get("country_code")): x.get("proxy_latency_ms")
+            for x in (_LOCATION_PROBE_CACHE.get("rows") or [])
+        }
+    else:
+        probes: dict[str, float | None] = {}
+        available = [x for x in rows if x.get("available") and int(x.get("port") or 0) > 0]
+        with ThreadPoolExecutor(max_workers=min(10, max(1, len(available)))) as pool:
+            futures = {
+                pool.submit(socks5_latency_ms, "10.60.0.1", int(row["port"])): str(row["country_code"])
+                for row in available
+            }
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    probes[code] = future.result()
+                except Exception:
+                    probes[code] = None
+        _LOCATION_PROBE_CACHE.update({
+            "at": now,
+            "signature": signature,
+            "rows": [
+                {"country_code": code, "proxy_latency_ms": latency}
+                for code, latency in probes.items()
+            ],
+        })
+
+    ports = {int(PREFERRED_LOCAL_PORTS[x["country_code"]]) for x in rows}
+    connections = established_connections_by_port(ports)
+    current_host = _gateway_host({"endpoint": _current_wireguard_endpoint()})
+    gateway_latency = ping_latency_ms(current_host) if current_host else None
+    out = []
+    for row in rows:
+        code = str(row["country_code"])
+        local_port = int(PREFERRED_LOCAL_PORTS[code])
+        proxy_latency = probes.get(code) if row.get("available") else None
+        total_latency = None
+        if gateway_latency is not None and proxy_latency is not None:
+            total_latency = round(float(gateway_latency) + float(proxy_latency), 1)
+        out.append({
+            "country_code": code,
+            "label": f"{row.get('flag','')} {row.get('name','')} — {row.get('city','')}".strip(),
+            "local_port": local_port,
+            "gateway_port": int(row.get("port") or 0) if row.get("available") else None,
+            "available": bool(row.get("available")),
+            "connections": int(connections.get(local_port, 0)),
+            "proxy_latency_ms": proxy_latency,
+            "total_latency_ms": total_latency,
+        })
+    return out
+
+
+def light_runtime_metrics() -> dict[str, Any]:
+    ports = set(PREFERRED_LOCAL_PORTS.values())
+    connections = established_connections_by_port(ports)
+    return {
+        **wireguard_rate_mbps(),
+        "active_connections": sum(connections.values()),
+    }
+
 
 def panel_runtime_status(panel: dict[str, Any]) -> dict[str, Any]:
     if panel["type"] == "sanaei":
