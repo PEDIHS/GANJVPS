@@ -24,7 +24,7 @@ import requests
 from panel_sync import adapter_from_profile, detect_sanaei_local
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
