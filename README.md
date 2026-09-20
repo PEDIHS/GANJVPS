@@ -14,6 +14,11 @@ It is designed for servers running supported Xray panels such as Sanaei 3x-ui an
 - 30 curated gateway locations with stable ports
 - Central health, heartbeat and desired-state control
 - WireGuard DNS endpoint refresh and local tunnel self-heal
+- Multi-gateway ranking, best-ping selection and automatic failover
+- Automatic desired-state reconciliation for locations
+- Live throughput, active-connection and per-location latency status
+- Hourly safe update checks with in-process handoff
+- Source-controlled Central control plane and Representatives dashboard
 - Multi-gateway ranking, Best-Ping selection and automatic failover
 - Automatic desired-state reconciliation for newly available locations
 - Live RX/TX Mbps, active inbound connections and per-location SOCKS latency
