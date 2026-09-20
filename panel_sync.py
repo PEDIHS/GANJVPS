@@ -180,7 +180,7 @@ def _country_from_ganj_remark(value: str) -> str | None:
     for code, label in DISPLAY_LABELS.items():
         if raw == label:
             return code
-    # New human-facing names begin with a Unicode flag. Decode the two
+    # Human-facing names begin with a Unicode flag. Decode the two
     # regional-indicator symbols back to an ISO alpha-2 country code.
     if len(raw) >= 2:
         a, b = ord(raw[0]), ord(raw[1])
@@ -188,6 +188,19 @@ def _country_from_ganj_remark(value: str) -> str | None:
         if base <= a <= base + 25 and base <= b <= base + 25:
             return chr(ord("A") + a - base) + chr(ord("A") + b - base)
     return None
+
+
+def _country_from_pasarguard_tag(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if raw.startswith(GANJ_IN_PREFIX):
+        code = raw[len(GANJ_IN_PREFIX):len(GANJ_IN_PREFIX) + 2].upper()
+        if code in LOCATION_CATALOG:
+            return code
+    return _country_from_ganj_remark(raw)
+
+
+def _is_ganj_pasarguard_tag(value: str) -> bool:
+    return _country_from_pasarguard_tag(value) is not None
 
 
 def _require_vless(template: dict[str, Any]) -> None:
@@ -380,9 +393,9 @@ class PasarGuardAdapter:
         outbounds = cfg.get("outbounds") or []
         rules = (cfg.get("routing") or {}).get("rules") or []
         hosts = self.get_hosts()
-        managed_inbounds = [x for x in inbounds if str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)]
+        managed_inbounds = [x for x in inbounds if _is_ganj_pasarguard_tag(str(x.get("tag") or ""))]
         managed_outbounds = [x for x in outbounds if str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
-        managed_hosts = [x for x in hosts if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)]
+        managed_hosts = [x for x in hosts if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))]
         return {
             "ok": True,
             "type": "pasarguard",
@@ -414,7 +427,7 @@ class PasarGuardAdapter:
         template = next((x for x in inbounds if x.get("tag") == self.template_inbound_tag), None)
         if not template:
             raise RuntimeError("pasarguard_template_inbound_not_found")
-        if str(template.get("tag") or "").startswith(GANJ_IN_PREFIX):
+        if _is_ganj_pasarguard_tag(str(template.get("tag") or "")):
             raise RuntimeError("pasarguard_template_must_be_dedicated_non_ganj_inbound")
         _require_vless(template)
         hosts = self.get_hosts()
@@ -424,14 +437,13 @@ class PasarGuardAdapter:
         existing_by_country: dict[str, int] = {}
         for row in inbounds:
             tag = str(row.get("tag") or "")
-            if tag.startswith(GANJ_IN_PREFIX) and row.get("port"):
-                code = tag[len(GANJ_IN_PREFIX):].upper()
-                if len(code) == 2:
-                    existing_by_country[code] = int(row["port"])
+            code = _country_from_pasarguard_tag(tag)
+            if code and row.get("port"):
+                existing_by_country[code] = int(row["port"])
         used = {
             int(x.get("port"))
             for x in inbounds
-            if x.get("port") and not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
+            if x.get("port") and not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))
         }
         assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
@@ -442,7 +454,7 @@ class PasarGuardAdapter:
                 "name": loc["name"],
                 "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
-                "inbound_tag": GANJ_IN_PREFIX + loc["country_code"].lower(),
+                "inbound_tag": _display_label(loc),
                 "host_clone": bool(template_host),
                 "available": bool(loc.get("available")),
             })
@@ -488,18 +500,18 @@ class PasarGuardAdapter:
             raise RuntimeError("pasarguard_template_host_not_found")
         old_managed_hosts = [
             copy.deepcopy(x) for x in hosts
-            if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)
+            if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))
         ]
 
         _atomic_backup("pasarguard-core", old_core)
         if old_managed_hosts:
             _atomic_backup("pasarguard-hosts", old_managed_hosts)
 
-        managed_tags = {GANJ_IN_PREFIX + x["country_code"].lower() for x in locs}
+        managed_tags = {_display_label(x) for x in locs}
         managed_out = {GANJ_OUT_PREFIX + x["country_code"].lower() for x in locs}
         inbounds[:] = [
             x for x in inbounds
-            if not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)
+            if not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))
         ]
         outbounds[:] = [
             x for x in outbounds
@@ -508,14 +520,14 @@ class PasarGuardAdapter:
         rules[:] = [
             x for x in rules
             if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+            and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
         ]
 
         created = []
         for loc in locs:
             code = loc["country_code"]
             local_port = planned_ports[code]
-            in_tag = GANJ_IN_PREFIX + code.lower()
+            in_tag = _display_label(loc)
             out_tag = GANJ_OUT_PREFIX + code.lower()
 
             inbound = copy.deepcopy(template)
@@ -545,7 +557,7 @@ class PasarGuardAdapter:
             if template_host:
                 for h in self.get_hosts():
                     tag = str(h.get("inbound_tag") or "")
-                    if tag.startswith(GANJ_IN_PREFIX) and h.get("id"):
+                    if _is_ganj_pasarguard_tag(tag) and h.get("id"):
                         self.delete_host(int(h["id"]))
 
                 for item, loc in zip(created, locs):
@@ -573,7 +585,7 @@ class PasarGuardAdapter:
                 verify_hosts = {
                     str(x.get("inbound_tag") or "")
                     for x in self.get_hosts()
-                    if str(x.get("inbound_tag") or "").startswith(GANJ_IN_PREFIX)
+                    if _is_ganj_pasarguard_tag(str(x.get("inbound_tag") or ""))
                 }
                 if not managed_tags.issubset(verify_hosts):
                     raise RuntimeError("pasarguard_post_install_host_verification_failed")
@@ -606,12 +618,12 @@ class PasarGuardAdapter:
         outbounds = config.setdefault("outbounds", [])
         rules = config.setdefault("routing", {}).setdefault("rules", [])
         before = len(inbounds)
-        inbounds[:] = [x for x in inbounds if not str(x.get("tag") or "").startswith(GANJ_IN_PREFIX)]
+        inbounds[:] = [x for x in inbounds if not _is_ganj_pasarguard_tag(str(x.get("tag") or ""))]
         outbounds[:] = [x for x in outbounds if not str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)]
         rules[:] = [
             x for x in rules
             if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-            and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+            and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
         ]
         self.update_core(core, config)
         removed_hosts = 0
@@ -785,7 +797,7 @@ class SanaeiAdapter:
         template = next((x for x in rows if int(x.get("id") or 0) == self.template_inbound_id), None)
         if not template:
             raise RuntimeError("sanaei_template_inbound_not_found")
-        if str(template.get("remark") or "").startswith(GANJ_REMARK_PREFIX):
+        if _country_from_ganj_remark(str(template.get("remark") or "")):
             raise RuntimeError("sanaei_template_must_be_dedicated_non_ganj_inbound")
         _require_vless(template)
         existing_by_country: dict[str, int] = {}
@@ -796,7 +808,7 @@ class SanaeiAdapter:
         used = {
             int(x.get("port"))
             for x in rows
-            if x.get("port") and not str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)
+            if x.get("port") and not _country_from_ganj_remark(str(x.get("remark") or ""))
         }
         assigned = _plan_stable_country_ports(locs, used, existing_by_country)
         items = []
@@ -893,7 +905,7 @@ class SanaeiAdapter:
             rules[:] = [
                 x for x in rules
                 if not str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)
-                and not any(str(t).startswith(GANJ_IN_PREFIX) for t in (x.get("inboundTag") or []))
+                and not any(_is_ganj_pasarguard_tag(str(t)) for t in (x.get("inboundTag") or []))
             ]
 
             for item, loc in zip(created, locs):
