@@ -229,22 +229,34 @@ def os_summary() -> str:
     except Exception:
         return f"{platform.system()} / {platform.release()}"
 
-def detect_panel() -> dict[str, Any]:
+def detect_panels() -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
     if Path("/usr/local/x-ui/x-ui").exists() or Path("/etc/x-ui/x-ui.db").exists():
         version = None
         try:
             p = run(["/usr/local/x-ui/x-ui", "version"], timeout=6)
-            version = (p.stdout or p.stderr).strip().splitlines()[0][:120]
+            rows = (p.stdout or p.stderr).strip().splitlines()
+            version = rows[0][:120] if rows else None
         except Exception:
             pass
-        return {"type": "sanaei", "name": "Sanaei 3x-ui", "version": version, "detected": True}
-
+        found.append({"type": "sanaei", "name": "Sanaei 3x-ui", "version": version, "detected": True})
     pg_paths = [Path("/opt/pasarguard"), Path("/opt/PasarGuard"), Path("/etc/pasarguard"), Path("/etc/PasarGuard")]
     if any(p.exists() for p in pg_paths):
-        return {"type": "pasarguard", "name": "PasarGuard", "version": None, "detected": True}
+        found.append({"type": "pasarguard", "name": "PasarGuard", "version": None, "detected": True})
+    return found
 
+def detect_panel() -> dict[str, Any]:
+    configured = load_json(PANEL_SECRET_FILE, {})
+    if isinstance(configured, dict) and configured.get("type"):
+        for item in detect_panels():
+            if item.get("type") == configured.get("type"):
+                return {**item, "configured": True}
+    found = detect_panels()
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        return {"type": "multiple", "name": "Multiple panels", "version": None, "detected": True, "candidates": found}
     return {"type": "unknown", "name": "Unknown", "version": None, "detected": False}
-
 def ensure_wg_keys() -> tuple[str, str]:
     ETC_DIR.mkdir(parents=True, exist_ok=True)
     if WG_PRIVATE_FILE.exists() and WG_PUBLIC_FILE.exists():
