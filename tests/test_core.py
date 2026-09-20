@@ -57,6 +57,12 @@ class LocationTests(unittest.TestCase):
 
 
 class PasarGuardGenerationTests(unittest.TestCase):
+    def test_unrelated_flag_prefixed_objects_are_not_ganj_owned(self):
+        self.assertIsNone(panel_sync._country_from_ganj_remark("🇩🇪 Personal"))
+        self.assertIsNone(panel_sync._country_from_pasarguard_tag("🇩🇪 Personal"))
+        self.assertEqual(panel_sync._country_from_ganj_remark("🇩🇪 Germany — Berlin"), "DE")
+        self.assertEqual(panel_sync._country_from_pasarguard_tag("ganj-de"), "DE")
+
     @without_live_ports
     def test_install_generates_only_ganj_owned_objects(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-test-"))
@@ -396,6 +402,23 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany — Berlin")
         self.assertEqual(panel_sync.DISPLAY_LABELS["US"], "🇺🇸 United States — Washington, D.C.")
         self.assertEqual(panel_sync.DISPLAY_LABELS["GB"], "🇬🇧 United Kingdom — London")
+
+    def test_sanaei_does_not_claim_unrelated_flag_remark(self):
+        adapter = SanaeiAdapter({
+            "url": "http://127.0.0.1:2053",
+            "username": "test", "password": "test",
+            "template_inbound_id": 9, "base_port": 6000,
+        })
+        adapter.login = lambda: None
+        adapter.list_inbounds = lambda: [
+            {"id": 9, "remark": "template", "port": 443, "protocol": "vless"},
+            {"id": 10, "remark": "🇩🇪 Personal", "port": 6500, "protocol": "vless"},
+            {"id": 11, "remark": "🇩🇪 Germany — Berlin", "port": 6000, "protocol": "vless"},
+        ]
+        adapter.get_xray = lambda: ({"outbounds": [], "routing": {"rules": []}}, "https://example.test/204")
+        status = adapter.managed_status()
+        self.assertEqual(status["managed_inbounds"], 1)
+        self.assertEqual(status["managed_ports"], [6000])
 
     def test_non_vless_template_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "template_protocol_must_be_vless"):
