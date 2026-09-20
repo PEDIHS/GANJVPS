@@ -1,0 +1,446 @@
+--- a/app/db.py
++++ b/app/db.py
+@@ -2,7 +2,7 @@
+ from datetime import datetime
+ from sqlalchemy import (
+     create_engine, String, Integer, BigInteger, Boolean, DateTime,
+-    ForeignKey, Text, UniqueConstraint, Float
++    ForeignKey, Text, UniqueConstraint, Float, text
+ )
+ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+ from .timeutil import utcnow
+@@ -110,6 +110,7 @@
+     traffic_limit_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
++    node_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+ 
+ class GanjManagedNode(Base):
+@@ -209,3 +210,12 @@
+ 
+ def init_db():
+     Base.metadata.create_all(engine)
++    with engine.begin() as conn:
++        conn.execute(text(
++            "ALTER TABLE ganj_enrollment_tokens "
++            "ADD COLUMN IF NOT EXISTS node_id VARCHAR(36)"
++        ))
++        conn.execute(text(
++            "CREATE INDEX IF NOT EXISTS ix_ganj_enrollment_tokens_node_id "
++            "ON ganj_enrollment_tokens (node_id)"
++        ))
+--- a/app/ganj_nodes.py
++++ b/app/ganj_nodes.py
+@@ -28,6 +28,26 @@
+     return hashlib.sha256(value.encode()).hexdigest()
+ 
+ 
++def configured_gateways() -> list[dict]:
++    raw = os.environ.get('GANJ_GATEWAYS_JSON', '').strip()
++    rows = []
++    if raw:
++        try:
++            parsed = json.loads(raw)
++            if isinstance(parsed, list):
++                rows = [dict(x) for x in parsed if isinstance(x, dict) and x.get('endpoint')]
++        except Exception:
++            rows = []
++    if WG_ENDPOINT and not any(str(x.get('endpoint')) == WG_ENDPOINT for x in rows):
++        rows.insert(0, {
++            'id': 'turkey-1',
++            'name': 'Türkiye — Ankara',
++            'endpoint': WG_ENDPOINT,
++            'priority': 10,
++        })
++    return rows
++
++
+ def safe_json(data) -> str:
+     raw = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+     if len(raw.encode("utf-8")) <= 65535:
+@@ -106,6 +126,8 @@
+     panel: dict = Field(default_factory=dict)
+     panel_runtime: dict = Field(default_factory=dict)
+     wireguard: dict = Field(default_factory=dict)
++    gateway: dict = Field(default_factory=dict)
++    runtime: dict = Field(default_factory=dict)
+     capabilities: dict = Field(default_factory=dict)
+ 
+ 
+@@ -117,7 +139,7 @@
+ 
+ 
+ class TokenRequest(BaseModel):
+-    label: str = Field(default='', max_length=128)
++    label: str = Field(min_length=1, max_length=128)
+     ttl_minutes: int = Field(default=30, ge=5, le=1440)
+     license_days: int = Field(default=30, ge=0, le=3650)
+     traffic_limit_gb: float | None = Field(default=None, ge=0.1, le=1000000)
+@@ -144,6 +166,7 @@
+ ALLOWED_NODE_ACTIONS = {
+     'sync', 'panel_status', 'locations_install', 'locations_remove',
+     'diagnostics', 'wg_restart',
++    'gateway_status', 'gateway_switch', 'reconcile', 'live_status',
+ }
+ 
+ 
+@@ -230,6 +253,7 @@
+             )
+             db.add(node)
+         token.used_at = now
++        token.node_id = node.id
+         db.commit()
+         return {
+             'node_id': node.id,
+@@ -268,6 +292,8 @@
+             runtime = {}
+         runtime['panel_runtime'] = body.panel_runtime
+         runtime['wireguard'] = body.wireguard
++        runtime['gateway'] = body.gateway
++        runtime['runtime'] = body.runtime
+         node.last_report_json = safe_json(runtime)
+         node.status = node_entitlement(node, now).get('reason') or 'online'
+         node.last_seen_at = now
+@@ -292,7 +318,13 @@
+             'revision': node.desired_revision,
+             'location': node.desired_location,
+             'license': node_entitlement(node),
+-            'gateway': {'host': '10.60.0.1', 'locations': locations},
++            'gateway': {
++                'host': '10.60.0.1',
++                'mode': 'best_ping',
++                'endpoint': WG_ENDPOINT,
++                'candidates': configured_gateways(),
++                'locations': locations,
++            },
+         }
+ 
+ 
+@@ -389,7 +421,130 @@
+         )
+         db.add(row)
+         db.commit()
+-        return {'token': raw, 'expires_at': row.expires_at, 'label': row.label, 'license_days': row.license_days, 'traffic_limit_bytes': row.traffic_limit_bytes}
++        db.refresh(row)
++        return {
++            'token': raw, 'token_id': row.id, 'status': 'pending',
++            'issued_at': row.created_at, 'expires_at': row.expires_at,
++            'label': row.label, 'license_days': row.license_days,
++            'traffic_limit_bytes': row.traffic_limit_bytes,
++        }
++
++
++def _token_status(token, now=None):
++    if not token:
++        return 'none'
++    now = now or utcnow()
++    if token.used_at is not None:
++        return 'used'
++    if token.expires_at and token.expires_at <= now:
++        return 'expired'
++    return 'pending'
++
++
++def _runtime_payload(node):
++    try:
++        runtime = json.loads(node.last_report_json or '{}')
++        return runtime if isinstance(runtime, dict) else {}
++    except Exception:
++        return {}
++
++
++def _node_payload(node, now=None, token=None):
++    now = now or utcnow()
++    age = (now - node.last_seen_at).total_seconds() if node.last_seen_at else None
++    ent = node_entitlement(node, now)
++    live_status = 'revoked' if node.revoked_at else (
++        ent['reason'] or ('online' if age is not None and age < 60 else 'offline')
++    )
++    return {
++        'id': node.id, 'node_id': node.id, 'representative_id': node.id,
++        'name': node.name, 'hostname': node.hostname,
++        'panel_type': node.panel_type, 'panel_name': node.panel_name,
++        'panel_version': node.panel_version, 'agent_version': node.agent_version,
++        'wg_address': node.wg_address, 'status': live_status,
++        'panel_connected': bool(age is not None and age < 60 and node.revoked_at is None),
++        'license': ent, 'last_seen_at': node.last_seen_at,
++        'desired_location': node.desired_location,
++        'applied_location': node.applied_location,
++        'desired_revision': node.desired_revision,
++        'last_error': node.last_error, 'runtime': _runtime_payload(node),
++        'created_at': node.created_at,
++        'token': ({
++            'id': token.id, 'status': _token_status(token, now),
++            'issued_at': token.created_at, 'expires_at': token.expires_at,
++            'used_at': token.used_at, 'license_days': token.license_days,
++        } if token else {
++            'id': None, 'status': 'legacy', 'issued_at': None,
++            'expires_at': None, 'used_at': None, 'license_days': None,
++        }),
++    }
++
++
++@admin_router.get('/enrollment-tokens')
++def list_enrollment_tokens():
++    now = utcnow()
++    with SessionLocal() as db:
++        rows = db.scalars(
++            select(GanjEnrollmentToken).order_by(GanjEnrollmentToken.created_at.desc())
++        ).all()
++        return {'items': [{
++            'id': t.id, 'label': t.label, 'status': _token_status(t, now),
++            'issued_at': t.created_at, 'expires_at': t.expires_at,
++            'used_at': t.used_at, 'node_id': t.node_id,
++            'license_days': t.license_days,
++            'traffic_limit_bytes': t.traffic_limit_bytes,
++        } for t in rows]}
++
++
++@admin_router.get('/representatives')
++def list_representatives():
++    now = utcnow()
++    with SessionLocal() as db:
++        tokens = db.scalars(
++            select(GanjEnrollmentToken).order_by(GanjEnrollmentToken.created_at.desc())
++        ).all()
++        nodes = db.scalars(
++            select(GanjManagedNode).order_by(GanjManagedNode.created_at.desc())
++        ).all()
++        node_map = {n.id: n for n in nodes}
++        linked = set()
++        items = []
++        for token in tokens:
++            node = node_map.get(token.node_id) if token.node_id else None
++            if node is not None:
++                linked.add(node.id)
++                item = _node_payload(node, now, token)
++                if token.label:
++                    item['name'] = token.label
++                items.append(item)
++                continue
++            items.append({
++                'id': None, 'node_id': None,
++                'representative_id': f'token-{token.id}',
++                'name': token.label or f'Representative {token.id}',
++                'hostname': '', 'panel_type': None, 'panel_name': None,
++                'panel_version': None, 'agent_version': None,
++                'wg_address': None, 'status': _token_status(token, now),
++                'panel_connected': False,
++                'license': {
++                    'active': False, 'reason': 'pending_enrollment',
++                    'expires_at': None, 'traffic_used_bytes': 0,
++                    'traffic_limit_bytes': token.traffic_limit_bytes,
++                    'license_days': token.license_days,
++                },
++                'last_seen_at': None, 'desired_location': None,
++                'applied_location': None, 'desired_revision': None,
++                'last_error': None, 'runtime': {}, 'created_at': token.created_at,
++                'token': {
++                    'id': token.id, 'status': _token_status(token, now),
++                    'issued_at': token.created_at, 'expires_at': token.expires_at,
++                    'used_at': token.used_at, 'license_days': token.license_days,
++                },
++            })
++        for node in nodes:
++            if node.id not in linked:
++                items.append(_node_payload(node, now, None))
++        return {'items': items}
+ 
+ 
+ @admin_router.get('/nodes')
+@@ -399,25 +554,12 @@
+         rows = db.scalars(select(GanjManagedNode).order_by(GanjManagedNode.created_at.desc())).all()
+         out = []
+         for n in rows:
+-            age = (now - n.last_seen_at).total_seconds() if n.last_seen_at else None
+-            ent = node_entitlement(n, now)
+-            live_status = 'revoked' if n.revoked_at else (ent['reason'] or ('online' if age is not None and age < 60 else 'offline'))
+-            runtime = {}
+-            try:
+-                runtime = json.loads(n.last_report_json or '{}')
+-                if not isinstance(runtime, dict):
+-                    runtime = {}
+-            except Exception:
+-                runtime = {}
+-            out.append({
+-                'id': n.id, 'name': n.name, 'hostname': n.hostname,
+-                'panel_type': n.panel_type, 'panel_name': n.panel_name, 'panel_version': n.panel_version,
+-                'agent_version': n.agent_version, 'wg_address': n.wg_address,
+-                'status': live_status, 'license': ent,
+-                'last_seen_at': n.last_seen_at, 'desired_location': n.desired_location,
+-                'applied_location': n.applied_location, 'desired_revision': n.desired_revision,
+-                'last_error': n.last_error, 'runtime': runtime, 'created_at': n.created_at,
+-            })
++            token = db.scalar(
++                select(GanjEnrollmentToken)
++                .where(GanjEnrollmentToken.node_id == n.id)
++                .order_by(GanjEnrollmentToken.created_at.desc())
++            )
++            out.append(_node_payload(n, now, token))
+         return {'items': out}
+ 
+ 
+--- a/panel/index.html
++++ b/panel/index.html
+@@ -56,7 +56,7 @@
+  <a class="nav" data-page="locations"><span class="nav-dot"></span>لوکیشن‌ها</a>
+  <a class="nav" data-page="health"><span class="nav-dot"></span>Health & Rotation</a>
+  <div class="nav-group">GANJ VPS</div>
+- <a class="nav" data-page="nodes"><span class="nav-dot"></span>Node Manager</a>
++ <a class="nav" data-page="nodes"><span class="nav-dot"></span>نمایندگان</a>
+  <div class="nav-group">سیستم</div>
+  <a class="nav" data-page="events"><span class="nav-dot"></span>رویدادها و لاگ‌ها</a>
+  <a class="nav" data-page="settings"><span class="nav-dot"></span>تنظیمات</a>
+@@ -161,17 +161,23 @@
+ </section>
+ 
+ <section class="page" id="page-nodes">
+- <div class="page-head"><div><h1>GANJ VPS Nodes</h1><p>Enrollment، WireGuard و مدیریت سرورهای متصل به Gateway مرکزی</p></div><div class="actions"><button class="btn" onclick="loadGanjNodes()">بروزرسانی</button></div></div>
+- <div class="section-note">برای هر سرور فقط یک Enrollment Token یک‌بارمصرف بساز. Agent بعد از ثبت، Secret اختصاصی و WireGuard Peer مستقل می‌گیرد؛ رمز پنل کاربر به سرور مرکزی ارسال نمی‌شود.</div>
++ <div class="page-head"><div><h1>نمایندگان GANJ VPS</h1><p>صدور توکن، اتصال پنل نماینده، سهمیه، انقضا و وضعیت لحظه‌ای</p></div><div class="actions"><button class="btn" onclick="loadGanjNodes()">بروزرسانی</button></div></div>
++ <div class="section-note">هر توکن به نام یک نماینده صادر می‌شود. نماینده از لحظه صدور توکن در لیست دیده می‌شود و پس از نصب Agent، همان رکورد به پنل متصل تبدیل می‌شود. توکن یک‌بارمصرف است و Secret پنل یا کانفیگ خام در این صفحه نمایش داده نمی‌شود.</div>
++ <div class="cards" style="margin-bottom:14px">
++  <div class="metric"><div class="label">کل نمایندگان</div><div class="value" id="ganjRepTotal">0</div><div class="hint">صادرشده + متصل</div></div>
++  <div class="metric"><div class="label">پنل آنلاین</div><div class="value" id="ganjRepOnline">0</div><div class="hint">Heartbeat کمتر از 60 ثانیه</div></div>
++  <div class="metric"><div class="label">توکن در انتظار</div><div class="value" id="ganjTokenPending">0</div><div class="hint">هنوز مصرف نشده</div></div>
++  <div class="metric"><div class="label">مصرف نمایندگان</div><div class="value" id="ganjRepTraffic">0 GB</div><div class="hint">RX + TX حساب‌شده</div></div>
++ </div>
+  <div class="grid2">
+   <div class="card">
+-   <div class="card-title"><h2>Enrollment Token</h2><span>One-time / Expiring</span></div>
++   <div class="card-title"><h2>صدور توکن نماینده</h2><span>One-time / Expiring</span></div>
+    <div class="form-grid">
+-    <div class="field"><label>برچسب</label><input id="ganjTokenLabel" placeholder="مثلاً customer-01"></div>
++    <div class="field"><label>نام نماینده</label><input id="ganjTokenLabel" required placeholder="مثلاً نماینده تهران"></div>
+     <div class="field"><label>اعتبار توکن نصب</label><select id="ganjTokenTtl"><option value="15">15 دقیقه</option><option value="30" selected>30 دقیقه</option><option value="60">1 ساعت</option><option value="360">6 ساعت</option></select></div>
+     <div class="field"><label>مدت لایسنس (روز، 0 = نامحدود)</label><input id="ganjLicenseDays" type="number" min="0" max="3650" value="30"></div>
+     <div class="field"><label>سقف ترافیک GB (خالی = نامحدود)</label><input id="ganjTrafficLimit" type="number" min="0.1" step="0.1" placeholder="نامحدود"></div>
+-    <div class="span2"><button class="btn primary" style="width:100%" onclick="createGanjToken()">ساخت توکن نصب</button></div>
++    <div class="span2"><button class="btn primary" style="width:100%" onclick="createGanjToken()">ساخت نماینده و صدور توکن</button></div>
+    </div>
+    <div id="ganjTokenBox" style="display:none;margin-top:12px;padding:12px;border:1px solid #314155;border-radius:11px;background:#0d131a">
+     <small style="color:var(--muted)">فقط همین بار نمایش داده می‌شود</small>
+@@ -189,8 +195,8 @@
+   </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+-  <div class="card-title"><h2>Managed Nodes</h2><span id="ganjNodeCount">0 node</span></div>
+-  <div class="table-wrap"><table class="table"><thead><tr><th>Node</th><th>Panel</th><th>WG IP</th><th>Status</th><th>License</th><th>Traffic</th><th>Desired</th><th>Applied</th><th>Last Seen</th><th>Actions</th></tr></thead><tbody id="ganjNodeRows"></tbody></table></div>
++  <div class="card-title"><h2>نمایندگان</h2><span id="ganjNodeCount">0 نماینده</span></div>
++  <div class="table-wrap"><table class="table" style="min-width:1250px"><thead><tr><th>نماینده</th><th>وضعیت پنل</th><th>توکن / انقضا</th><th>وضعیت</th><th>لایسنس / انقضا</th><th>مصرف / سقف</th><th>WG</th><th>Desired</th><th>Applied</th><th>آخرین ارتباط</th><th>عملیات</th></tr></thead><tbody id="ganjNodeRows"></tbody></table></div>
+  </div>
+ </section>
+ 
+@@ -267,7 +273,7 @@
+  dashboard:['داشبورد','نمای کلی Gateway و Collector'],wireguard:['WireGuard','Hub و Peerهای شبکه خصوصی'],traffic:['ترافیک و منابع','وضعیت CPU، RAM، Disk و Usage'],
+  accounts:['اکانت‌های تلگرام','مدیریت نشست‌های Collector'],sources:['سورس‌ها','کانال‌ها و گروه‌های فعال'],configs:['کانفیگ‌ها','Inventory جمع‌آوری‌شده'],
+  pools:['Proxy Pool','Pool و Active Upstream هر کشور'],locations:['لوکیشن‌ها','Country SOCKS endpoints'],health:['Health & Rotation','پایش کیفیت و Failover'],
+- nodes:['GANJ VPS Nodes','Enrollment و مدیریت Agentهای متصل'],events:['رویدادها و لاگ‌ها','Audit و رخدادهای عملیاتی'],settings:['تنظیمات','Gateway و Security']
++ nodes:['نمایندگان GANJ VPS','توکن، اتصال پنل، حجم و انقضای نمایندگان'],events:['رویدادها و لاگ‌ها','Audit و رخدادهای عملیاتی'],settings:['تنظیمات','Gateway و Security']
+ };
+ function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+ function fmtBytes(n){n=Number(n||0);for(const u of ['B','KB','MB','GB','TB']){if(n<1024)return n.toFixed(n>=100?0:1)+' '+u;n/=1024}return n.toFixed(1)+' PB'}
+@@ -562,46 +568,74 @@
+ let GANJ_LOCS=[];
+ async function loadGanjNodes(){
+  try{
+-  const [d,l]=await Promise.all([req('/admin/ganj/nodes'),req('/admin/locations')]);
++  const [d,l]=await Promise.all([req('/admin/ganj/representatives'),req('/admin/locations')]);
+   GANJ_LOCS=(l.items||[]).filter(x=>x.enabled);
++  const items=d.items||[];
+   const root=document.getElementById('ganjNodeRows');root.innerHTML='';
+-  setText('ganjNodeCount',(d.items||[]).length+' node');
+-  if(!d.items?.length){root.innerHTML='<tr><td colspan="10"><div class="empty">هنوز Node ثبت نشده</div></td></tr>';return}
+-  for(const n of d.items){
++  setText('ganjNodeCount',items.length+' نماینده');
++  setText('ganjRepTotal',items.length);
++  setText('ganjRepOnline',items.filter(x=>x.panel_connected).length);
++  setText('ganjTokenPending',items.filter(x=>(x.token||{}).status==='pending').length);
++  const totalUsed=items.reduce((sum,x)=>sum+Number((x.license||{}).traffic_used_bytes||0),0)/(1024**3);
++  setText('ganjRepTraffic',totalUsed.toFixed(2)+' GB');
++  if(!items.length){root.innerHTML='<tr><td colspan="11"><div class="empty">هنوز نماینده‌ای ساخته نشده</div></td></tr>';return}
++  for(const n of items){
++   const nodeId=n.node_id||n.id||null;
+    const opts='<option value="">Automatic</option>'+GANJ_LOCS.map(x=>'<option value="'+esc(x.country_code)+'" '+(n.desired_location===x.country_code?'selected':'')+'>'+esc(x.flag||'')+' '+esc(x.name)+' · :'+x.internal_port+'</option>').join('');
+    const cls=n.status==='online'?'good':(['revoked','expired','quota_exceeded'].includes(n.status)?'bad':'warn');
+    const rt=n.runtime||{}, pr=rt.panel_runtime||{}, wr=rt.wireguard||{};
+-   const panelLive=pr.active===true?'<span class="tag good">RUNNING</span>':(pr.active===false?'<span class="tag bad">STOPPED</span>':'');
++   const panelLive=n.panel_connected?'<span class="tag good">ONLINE</span>':(nodeId?'<span class="tag bad">OFFLINE</span>':'<span class="tag warn">NOT CONNECTED</span>');
++   const serviceLive=pr.active===true?'<span class="tag good">RUNNING</span>':(pr.active===false?'<span class="tag bad">STOPPED</span>':'');
+    const wgLive=wr.up===true?'<span class="tag good">WG UP</span>':(wr.up===false?'<span class="tag bad">WG DOWN</span>':'');
+    const gwLive=wr.gateway_reachable===true?'<span class="tag good">GW OK</span>':(wr.gateway_reachable===false?'<span class="tag warn">GW ?</span>':'');
+    const seen=n.last_seen_at?new Date(n.last_seen_at).toLocaleString('fa-IR'):'—';
+-   const lic=n.license||{}; const lexp=lic.expires_at?new Date(lic.expires_at).toLocaleDateString('fa-IR'):'∞';
++   const tok=n.token||{}; const tokExp=tok.expires_at?new Date(tok.expires_at).toLocaleString('fa-IR'):'—';
++   const tokMap={pending:'در انتظار استفاده',used:'استفاده‌شده',expired:'منقضی',legacy:'قدیمی'};
++   const tokCls=tok.status==='used'?'good':(tok.status==='expired'?'bad':'warn');
++   const tokText=tokMap[tok.status]||tok.status||'—';
++   const lic=n.license||{}; const lexp=lic.expires_at?new Date(lic.expires_at).toLocaleString('fa-IR'):'∞';
+    const used=Number(lic.traffic_used_bytes||0)/(1024**3), lim=lic.traffic_limit_bytes==null?null:Number(lic.traffic_limit_bytes)/(1024**3);
++   const pct=lim&&lim>0?Math.min(100,(used/lim)*100):0;
+    const traffic=used.toFixed(2)+' / '+(lim==null?'∞':lim.toFixed(1))+' GB';
+-   const licCls=lic.active?'good':'bad'; const licText=lic.active?('Active · '+lexp):esc(lic.reason||'inactive');
++   const pending=!nodeId;
++   const licCls=lic.active?'good':(pending?'warn':'bad');
++   const licText=lic.active?('فعال · '+lexp):(pending?('بعد از اتصال · '+(tok.license_days??lic.license_days??0)+' روز'):esc(lic.reason||'غیرفعال'));
++   const repId=esc(n.representative_id||nodeId||'');
++   const actions=nodeId?'<div class="actions"><button class="btn small node-apply">Location</button><button class="btn small node-install">Install</button><button class="btn small node-remove">Remove</button><button class="btn small node-diag">Diag</button><button class="btn small node-wg">WG</button><button class="btn small node-renew">Renew</button><button class="btn small danger node-revoke">Revoke</button></div>':'<span class="tag warn">منتظر نصب Agent</span>';
++   const desired=nodeId?'<select class="input" id="nodeLoc-'+esc(nodeId)+'">'+opts+'</select>':'—';
+    const tr=document.createElement('tr');
+-   tr.innerHTML='<td><b>'+esc(n.name||n.hostname||'Node')+'</b><br><small style="color:var(--muted)">'+esc((n.id||'').slice(0,8))+' · v'+esc(n.agent_version||'—')+'</small></td><td>'+esc(n.panel_name||n.panel_type||'—')+'<br>'+panelLive+'</td><td><code>'+esc(n.wg_address||'—')+'</code><br>'+wgLive+' '+gwLive+'</td><td><span class="tag '+cls+'">'+esc(n.status)+'</span>'+(n.last_error?'<br><small class="err">'+esc(n.last_error)+'</small>':'')+'</td><td><span class="tag '+licCls+'">'+licText+'</span></td><td><span class="latency">'+esc(traffic)+'</span></td><td><select class="input" id="nodeLoc-'+esc(n.id)+'">'+opts+'</select></td><td>'+esc(n.applied_location||'—')+'</td><td>'+esc(seen)+'</td><td><div class="actions"><button class="btn small node-apply">Location</button><button class="btn small node-install">Install</button><button class="btn small node-remove">Remove</button><button class="btn small node-diag">Diag</button><button class="btn small node-wg">WG</button><button class="btn small node-renew">Renew</button><button class="btn small danger node-revoke">Revoke</button></div></td>';
++   tr.innerHTML='<td><b>'+esc(n.name||n.hostname||'نماینده')+'</b><br><small style="color:var(--muted)">'+repId.slice(0,18)+(n.agent_version?' · v'+esc(n.agent_version):'')+'</small></td>'
++    +'<td>'+panelLive+'<br><small style="color:var(--muted)">'+esc(n.panel_name||n.panel_type||'—')+'</small> '+serviceLive+'</td>'
++    +'<td><span class="tag '+tokCls+'">'+esc(tokText)+'</span><br><small style="color:var(--muted)">انقضا: '+esc(tokExp)+'</small></td>'
++    +'<td><span class="tag '+cls+'">'+esc(n.status||'—')+'</span>'+(n.last_error?'<br><small class="err">'+esc(n.last_error)+'</small>':'')+'</td>'
++    +'<td><span class="tag '+licCls+'">'+licText+'</span></td>'
++    +'<td><span class="latency">'+esc(traffic)+'</span><div class="bar" style="height:4px;margin-top:6px;background:#1e2630;border-radius:999px;overflow:hidden"><i style="display:block;height:100%;width:'+pct.toFixed(1)+'%;background:linear-gradient(90deg,var(--accent),var(--cyan))"></i></div></td>'
++    +'<td><code>'+esc(n.wg_address||'—')+'</code><br>'+wgLive+' '+gwLive+'</td>'
++    +'<td>'+desired+'</td><td>'+esc(n.applied_location||'—')+'</td><td>'+esc(seen)+'</td><td>'+actions+'</td>';
+    root.appendChild(tr);
+-   tr.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(n.id);
+-   tr.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(n.id,'locations_install');
+-   tr.querySelector('.node-remove').onclick=()=>sendGanjNodeCommand(n.id,'locations_remove');
+-   tr.querySelector('.node-diag').onclick=()=>sendGanjNodeCommand(n.id,'diagnostics');
+-   tr.querySelector('.node-wg').onclick=()=>sendGanjNodeCommand(n.id,'wg_restart');
+-   tr.querySelector('.node-renew').onclick=()=>renewGanjNode(n.id);
+-   tr.querySelector('.node-revoke').onclick=()=>revokeGanjNode(n.id);
++   if(nodeId){
++    tr.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(nodeId);
++    tr.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(nodeId,'locations_install');
++    tr.querySelector('.node-remove').onclick=()=>sendGanjNodeCommand(nodeId,'locations_remove');
++    tr.querySelector('.node-diag').onclick=()=>sendGanjNodeCommand(nodeId,'diagnostics');
++    tr.querySelector('.node-wg').onclick=()=>sendGanjNodeCommand(nodeId,'wg_restart');
++    tr.querySelector('.node-renew').onclick=()=>renewGanjNode(nodeId);
++    tr.querySelector('.node-revoke').onclick=()=>revokeGanjNode(nodeId);
++   }
+   }
+  }catch(e){toast(e.message,true)}
+ }
+ async function createGanjToken(){
+  try{
+-  const label=document.getElementById('ganjTokenLabel').value.trim();
++  const label=document.getElementById('ganjTokenLabel').value.trim(); if(!label){toast('نام نماینده را وارد کنید',true);return;}
+   const ttl=Number(document.getElementById('ganjTokenTtl').value||30);
+   const license_days=Number(document.getElementById('ganjLicenseDays').value||0);
+   const tv=document.getElementById('ganjTrafficLimit').value.trim(); const traffic_limit_gb=tv?Number(tv):null;
+   const d=await req('/admin/ganj/enrollment-token',{method:'POST',body:JSON.stringify({label,ttl_minutes:ttl,license_days,traffic_limit_gb})});
+   document.getElementById('ganjTokenValue').textContent=d.token;
+   document.getElementById('ganjTokenBox').style.display='block';
+-  toast('توکن یک‌بارمصرف ساخته شد');
++  toast('نماینده ساخته شد و توکن یک‌بارمصرف صادر شد');
++  await loadGanjNodes();
+  }catch(e){toast(e.message,true)}
+ }
+ async function copyGanjToken(){const v=document.getElementById('ganjTokenValue').textContent;try{await navigator.clipboard.writeText(v);toast('کپی شد')}catch{toast('کپی ناموفق',true)}}
+@@ -621,8 +655,8 @@
+  try{await req('/admin/ganj/nodes/'+id+'/license',{method:'POST',body:JSON.stringify(body)});toast('لایسنس بروزرسانی شد');await loadGanjNodes()}catch(e){toast(e.message,true)}
+ }
+ async function revokeGanjNode(id){
+- if(!confirm('دسترسی این Node لغو شود؟'))return;
+- try{await req('/admin/ganj/nodes/'+id+'/revoke',{method:'POST',body:'{}'});toast('Node لغو شد');await loadGanjNodes()}catch(e){toast(e.message,true)}
++ if(!confirm('دسترسی این نماینده لغو شود؟'))return;
++ try{await req('/admin/ganj/nodes/'+id+'/revoke',{method:'POST',body:'{}'});toast('دسترسی نماینده لغو شد');await loadGanjNodes()}catch(e){toast(e.message,true)}
+ }
+ 
+ async function refreshAll(){await Promise.all([loadOverview(),loadSummary()])}
