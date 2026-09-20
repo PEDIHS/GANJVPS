@@ -1222,13 +1222,10 @@ def established_connections_by_port(ports: set[int]) -> dict[int, int]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        # In ss output the local endpoint is normally the penultimate endpoint
-        # token. Scan from left to right and count the first managed local port.
-        for token in parts:
-            port = _socket_token_port(token)
-            if port in counts:
-                counts[port] += 1
-                break
+        # The final two endpoint fields are local and peer respectively.
+        port = _socket_token_port(parts[-2])
+        if port in counts:
+            counts[port] += 1
     return counts
 
 
@@ -1655,11 +1652,14 @@ def diagnostics() -> int:
     print(json.dumps(checks, ensure_ascii=False, indent=2))
     return 0
 
-def _status_snapshot() -> dict[str, Any]:
+def _status_snapshot(include_locations: bool = False) -> dict[str, Any]:
     panel = detect_panel()
     state = load_json(STATE_FILE, {})
     cfg = load_json(CONFIG_FILE, {})
     wg = wg_status()
+    desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
+    active_gateway = state.get("active_gateway") if isinstance(state.get("active_gateway"), dict) else {}
+    current_host = _gateway_host({"endpoint": _current_wireguard_endpoint()})
     snap: dict[str, Any] = {
         "version": APP_VERSION,
         "node_id": cfg.get("node_id"),
@@ -1667,12 +1667,20 @@ def _status_snapshot() -> dict[str, Any]:
         "panel": panel,
         "panel_configured": PANEL_SECRET_FILE.exists(),
         "wireguard": wg,
+        "gateway": active_gateway,
         "gateway_reachable": gateway_tunnel_ok(),
-        "gateway_latency_ms": ping_latency_ms("10.60.0.1") if wg.get("up") else None,
+        "gateway_latency_ms": ping_latency_ms(current_host) if current_host else None,
         "last_sync": state.get("last_heartbeat"),
         "last_error": state.get("last_error"),
-        "desired": state.get("desired") or {},
+        "desired": desired,
+        "runtime": light_runtime_metrics(),
+        "reconcile": state.get("last_reconcile_result") or {},
     }
+    if include_locations and desired:
+        try:
+            snap["locations_runtime"] = location_runtime_rows(desired)
+        except Exception as exc:
+            snap["locations_runtime_error"] = type(exc).__name__
     if PANEL_SECRET_FILE.exists():
         try:
             snap["panel_status"] = adapter_from_profile(panel_profile()).status()
@@ -1712,10 +1720,19 @@ def _print_status_snapshot(snap: dict[str, Any]) -> None:
                 print(f"  Hosts       {ps.get('hosts',0)} total · {ps.get('managed_hosts',0)} GANJ")
         else:
             print(f"  Panel API   OFFLINE · {ps.get('error','unknown')}")
+    active_gateway = snap.get("gateway") or {}
+    gateway_name = active_gateway.get("name") or active_gateway.get("id") or "current"
     print(
         f"  WireGuard   {'UP' if wg.get('up') else 'DOWN'}  · "
         f"Gateway {'ONLINE' if snap.get('gateway_reachable') else 'OFFLINE'}"
         + (f" · {snap.get('gateway_latency_ms')} ms" if snap.get("gateway_latency_ms") is not None else "")
+    )
+    print(f"  Gateway     {gateway_name} · {_current_wireguard_endpoint() or '—'}")
+    runtime = snap.get("runtime") or {}
+    print(
+        f"  Live        ↓ {float(runtime.get('rx_mbps') or 0):.2f} Mbps · "
+        f"↑ {float(runtime.get('tx_mbps') or 0):.2f} Mbps · "
+        f"{int(runtime.get('active_connections') or 0)} connections"
     )
     print(f"  Central     {'configured' if snap.get('central') else 'not enrolled'} · last sync {_human_time(snap.get('last_sync'))}")
     if snap.get("last_error"):
@@ -1729,17 +1746,33 @@ def _print_status_snapshot(snap: dict[str, Any]) -> None:
     locations = ((desired.get("gateway") or {}).get("locations") or [])
     if locations:
         print(f"  Locations   {len(locations)} published · desired {desired.get('location') or 'automatic'}")
+    runtime_rows = snap.get("locations_runtime") or []
+    visible = [x for x in runtime_rows if x.get("available") or int(x.get("connections") or 0) > 0]
+    if visible:
+        print("  ───────────────────────────────────────────────────────")
+        print("  Location                    Port   Conn   Proxy    Total")
+        for row in visible:
+            proxy = "—" if row.get("proxy_latency_ms") is None else f"{row['proxy_latency_ms']:.0f}ms"
+            total = "—" if row.get("total_latency_ms") is None else f"{row['total_latency_ms']:.0f}ms"
+            print(
+                f"  {str(row.get('label') or '')[:27]:<27} "
+                f"{int(row.get('local_port') or 0):<6} "
+                f"{int(row.get('connections') or 0):<6} "
+                f"{proxy:<8} {total}"
+            )
+    if snap.get("locations_runtime_error"):
+        print(f"  Location probe error: {snap['locations_runtime_error']}")
     print("╰─────────────────────────────────────────────────────────╯")
 
 
 def status(watch: bool = False) -> int:
     if not watch:
-        _print_status_snapshot(_status_snapshot())
+        _print_status_snapshot(_status_snapshot(include_locations=True))
         return 0
     try:
         while True:
             os.system("clear")
-            _print_status_snapshot(_status_snapshot())
+            _print_status_snapshot(_status_snapshot(include_locations=True))
             print("\nCtrl+C to return")
             time.sleep(2)
     except KeyboardInterrupt:
