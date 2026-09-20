@@ -472,10 +472,70 @@ class SanaeiAdapter:
         if not data.get("success"):
             raise RuntimeError("sanaei_xray_update_failed")
 
-    def status(self) -> dict[str, Any]:
+    def discover(self) -> dict[str, Any]:
         self.login()
         rows = self.list_inbounds()
-        return {"ok": True, "type": "sanaei", "inbounds": len(rows)}
+        inbounds = []
+        for i, row in enumerate(rows, 1):
+            inbounds.append({
+                "index": i,
+                "id": int(row.get("id") or 0),
+                "remark": str(row.get("remark") or ""),
+                "port": int(row.get("port") or 0),
+                "protocol": _protocol_name(row),
+                "listen": _listen_text(row),
+                "enable": bool(row.get("enable", True)),
+                "tag": str(row.get("tag") or ""),
+            })
+        return {"ok": True, "type": "sanaei", "inbounds": inbounds}
+
+    def managed_status(self) -> dict[str, Any]:
+        self.login()
+        rows = self.list_inbounds()
+        managed = [x for x in rows if str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)]
+        cfg, _ = self.get_xray()
+        outbounds = cfg.get("outbounds") or []
+        rules = (cfg.get("routing") or {}).get("rules") or []
+        return {
+            "ok": True,
+            "type": "sanaei",
+            "template_inbound_id": self.template_inbound_id,
+            "base_port": self.base_port,
+            "inbounds": len(rows),
+            "managed_inbounds": len(managed),
+            "managed_outbounds": sum(1 for x in outbounds if str(x.get("tag") or "").startswith(GANJ_OUT_PREFIX)),
+            "managed_rules": sum(1 for x in rules if str(x.get("outboundTag") or "").startswith(GANJ_OUT_PREFIX)),
+            "managed_ports": sorted(int(x.get("port") or 0) for x in managed if x.get("port")),
+        }
+
+    def plan_locations(self, locations: list[dict[str, Any]]) -> dict[str, Any]:
+        self.login()
+        locs = _location_map(locations)
+        if not locs:
+            raise RuntimeError("no_locations")
+        rows = self.list_inbounds()
+        template = next((x for x in rows if int(x.get("id") or 0) == self.template_inbound_id), None)
+        if not template:
+            raise RuntimeError("sanaei_template_inbound_not_found")
+        used = {
+            int(x.get("port"))
+            for x in rows
+            if x.get("port") and not str(x.get("remark") or "").startswith(GANJ_REMARK_PREFIX)
+        }
+        ports = choose_port_block(used, len(locs), self.base_port)
+        items = []
+        for loc, local_port in zip(locs, ports):
+            items.append({
+                "country_code": loc["country_code"],
+                "name": loc["name"],
+                "gateway_port": loc["port"],
+                "local_port": local_port,
+                "template_inbound_id": self.template_inbound_id,
+            })
+        return {"ok": True, "type": "sanaei", "items": items}
+
+    def status(self) -> dict[str, Any]:
+        return self.managed_status()
 
     def install_locations(self, locations: list[dict[str, Any]]) -> dict[str, Any]:
         self.login()
