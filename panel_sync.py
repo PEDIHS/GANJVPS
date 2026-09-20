@@ -142,6 +142,28 @@ class PasarGuardAdapter:
         r.raise_for_status()
         return r.json()
 
+
+    def list_cores(self) -> list[dict[str, Any]]:
+        r = self.s.get(f"{self.base}/api/cores", params={"all": "true"}, timeout=15)
+        if r.status_code == 404:
+            return []
+        r.raise_for_status()
+        data = r.json()
+        rows = data.get("cores") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            return []
+        out = []
+        for i, row in enumerate(rows, 1):
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "index": i,
+                "id": int(row.get("id") or 0),
+                "name": str(row.get("name") or f"Core {row.get('id') or i}"),
+                "type": str(row.get("type") or "xray"),
+            })
+        return out
+
     def update_core(self, core: dict[str, Any], config: dict[str, Any]) -> None:
         body = {
             "name": core.get("name"),
