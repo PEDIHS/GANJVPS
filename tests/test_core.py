@@ -392,6 +392,41 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual(panel_sync._country_from_ganj_remark("🇩🇪 Germany — Berlin"), "DE")
         self.assertEqual(panel_sync._country_from_pasarguard_tag("ganj-de"), "DE")
 
+    def test_pasarguard_tag_is_namespaced_and_comma_safe(self):
+        tag = panel_sync._pasarguard_location_tag({
+            "country_code": "US",
+            "name": "United States",
+            "city": "Washington, D.C.",
+            "flag": "🇺🇸",
+        })
+        self.assertTrue(tag.startswith("ganj-us "))
+        self.assertNotIn(",", tag)
+        self.assertTrue(panel_sync._is_ganj_pasarguard_owned_tag(tag))
+        self.assertFalse(
+            panel_sync._is_ganj_pasarguard_owned_tag("🇺🇸 United States")
+        )
+
+    def test_pasarguard_restart_disconnect_is_recovered_by_readback(self):
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 0, "base_port": 6000,
+        })
+        class BrokenSession:
+            def put(self, *args, **kwargs):
+                raise panel_sync.requests.ConnectionError("restart closed socket")
+        adapter.s = BrokenSession()
+        seen = []
+        adapter._wait_core_after_restart = lambda cfg, timeout=75: seen.append(copy.deepcopy(cfg))
+        core = {
+            "name": "main", "type": "xray",
+            "exclude_inbound_tags": [], "fallbacks_inbound_tags": [],
+        }
+        cfg = {"inbounds": [{"tag": "ganj-de", "port": 6000}]}
+        adapter._put_core(core, cfg, restart_nodes=True)
+        self.assertEqual(seen, [cfg])
+
     @without_live_ports
     def test_install_generates_only_ganj_owned_objects(self):
         panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-test-"))
@@ -423,6 +458,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
             core["config"] = config
             captured["config"] = config
         adapter.update_core = apply_core
+        adapter.restart_core = lambda c, config: None
         result = adapter.install_locations([
             {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
             {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
@@ -431,8 +467,8 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual(len(result["installed"]), 2)
         tags = {x["tag"] for x in cfg["inbounds"]}
         self.assertIn("template", tags)
-        self.assertIn("🇩🇪 Germany — Berlin", tags)
-        self.assertIn("🇳🇱 Netherlands — Amsterdam", tags)
+        self.assertIn("ganj-de 🇩🇪 Germany — Berlin", tags)
+        self.assertIn("ganj-nl 🇳🇱 Netherlands — Amsterdam", tags)
         outbound_tags = {x["tag"] for x in cfg["outbounds"]}
         self.assertIn("direct", outbound_tags)
         self.assertIn("ganj-egress-de", outbound_tags)
@@ -462,10 +498,11 @@ class PasarGuardGenerationTests(unittest.TestCase):
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: []
         adapter.update_core = lambda c, config: core.update({"config": config})
+        adapter.restart_core = lambda c, config: None
         result = adapter.install_locations([
             {"country_code": "NL", "name": "Netherlands", "port": 0, "enabled": False},
         ])
-        placeholder = next(x for x in core["config"]["inbounds"] if x.get("tag") == "🇳🇱 Netherlands — Amsterdam")
+        placeholder = next(x for x in core["config"]["inbounds"] if x.get("tag") == "ganj-nl 🇳🇱 Netherlands — Amsterdam")
         self.assertEqual(placeholder["port"], 6001)
         outbound = next(x for x in core["config"]["outbounds"] if x.get("tag") == "ganj-egress-nl")
         self.assertEqual(outbound["protocol"], "blackhole")
@@ -495,10 +532,23 @@ class PasarGuardGenerationTests(unittest.TestCase):
                 "outbounds": [], "routing": {"rules": []},
             },
         }
-        hosts = [{"id": 77, "remark": "template host", "inbound_tag": "template", "port": 443, "address": ["edge.test"], "priority": 0}]
+        hosts = [{
+            "id": 77,
+            "remark": "template host",
+            "inbound_tag": "template",
+            "port": 443,
+            "address": ["ganjvps.pedramhs.ir"],
+            "sni": ["link.aparat.com"],
+            "security": "inbound_default",
+            "fingerprint": "chrome",
+            "status": ["on_hold", "active"],
+            "priority": 11,
+            "transport_settings": {"xhttp_settings": {"mode": "auto"}},
+        }]
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: list(hosts)
         adapter.update_core = lambda c, config: core.update({"config": config})
+        adapter.restart_core = lambda c, config: None
         def delete_host(host_id):
             hosts[:] = [x for x in hosts if int(x.get("id") or 0) != int(host_id)]
         adapter.delete_host = delete_host
@@ -518,7 +568,22 @@ class PasarGuardGenerationTests(unittest.TestCase):
         self.assertEqual([x["port"] for x in created_hosts], [6000, 6001])
         self.assertEqual(
             [x["inbound_tag"] for x in created_hosts],
-            ["🇩🇪 Germany — Berlin", "🇳🇱 Netherlands — Amsterdam"],
+            ["ganj-de 🇩🇪 Germany — Berlin", "ganj-nl 🇳🇱 Netherlands — Amsterdam"],
+        )
+        template = hosts[0]
+        for clone in created_hosts:
+            for key, value in template.items():
+                if key in {"id", "inbound_tag", "port"}:
+                    continue
+                self.assertEqual(clone.get(key), value, key)
+        self.assertEqual(
+            created_hosts[0]["address"], ["ganjvps.pedramhs.ir"]
+        )
+        self.assertEqual(created_hosts[0]["sni"], ["link.aparat.com"])
+        self.assertEqual(created_hosts[0]["security"], "inbound_default")
+        self.assertEqual(
+            created_hosts[0]["transport_settings"],
+            {"xhttp_settings": {"mode": "auto"}},
         )
         self.assertEqual(len(result["installed"]), 2)
 

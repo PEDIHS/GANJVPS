@@ -31,7 +31,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -370,12 +370,11 @@ def configure_panel(force_manual: bool = False, auto_mode: bool = False) -> int:
             _ui_warn("No PasarGuard Hosts found; only core inbounds will be created.")
 
         if profile["template_host_id"]:
-            print(f"\n{_GOLD}{_BOLD}  Host port policy{_RESET}")
-            print("  [1] Keep the template Host port")
-            print("  [2] Follow each generated inbound port (6000-series)")
-            print("  [3] Leave Host port empty and let PasarGuard resolve it")
-            hp = input(_ui_prompt("Select [1]")).strip() or "1"
-            profile["host_port_mode"] = {"1": "template", "2": "inbound", "3": "none"}.get(hp, "template")
+            # The selected Host is cloned exactly. Only its inbound linkage
+            # and port change; the port always follows that location's
+            # generated inbound (6000-series).
+            profile["host_port_mode"] = "inbound"
+            _ui_ok("Host clone port follows each generated location inbound")
 
     profile["base_port"] = 6000
     profile["port_mode"] = "fixed-location-range-6000-6030"

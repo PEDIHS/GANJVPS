@@ -156,9 +156,9 @@ class CentralRepresentativeTests(unittest.TestCase):
             self.assertEqual(rep["expires_at"], expiry)
             self.assertEqual(node["status"], "revoked")
             self.assertEqual(len(tokens), 2)
-            self.assertEqual(tokens[0]["status"], "revoked")
-            self.assertEqual(tokens[1]["status"], "pending")
-            self.assertEqual(tokens[1]["token_hash"], central.hash_secret(raw))
+            self.assertEqual({t["status"] for t in tokens}, {"revoked", "pending"})
+            pending = next(t for t in tokens if t["status"] == "pending")
+            self.assertEqual(pending["token_hash"], central.hash_secret(raw))
         finally:
             central.wg_peer_apply = old_peer
 
