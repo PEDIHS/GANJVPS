@@ -282,6 +282,8 @@ class PasarGuardAdapter:
         template = next((x for x in inbounds if x.get("tag") == self.template_inbound_tag), None)
         if not template:
             raise RuntimeError("pasarguard_template_inbound_not_found")
+        if str(template.get("tag") or "").startswith(GANJ_IN_PREFIX):
+            raise RuntimeError("pasarguard_template_must_be_dedicated_non_ganj_inbound")
         hosts = self.get_hosts()
         template_host = next((x for x in hosts if int(x.get("id") or 0) == self.template_host_id), None)
         if self.template_host_id and not template_host:
@@ -658,6 +660,8 @@ class SanaeiAdapter:
         template = next((x for x in rows if int(x.get("id") or 0) == self.template_inbound_id), None)
         if not template:
             raise RuntimeError("sanaei_template_inbound_not_found")
+        if str(template.get("remark") or "").startswith(GANJ_REMARK_PREFIX):
+            raise RuntimeError("sanaei_template_must_be_dedicated_non_ganj_inbound")
         existing_by_country: dict[str, int] = {}
         for row in rows:
             code = _country_from_ganj_remark(str(row.get("remark") or ""))
