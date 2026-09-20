@@ -1582,6 +1582,35 @@ def execute_central_command(action: str, payload: dict[str, Any] | None = None) 
         if p.returncode != 0:
             raise RuntimeError("wireguard_restart_failed")
         return {"wireguard": wg_status()}
+    if action == "gateway_status":
+        current = _current_wireguard_endpoint()
+        return {
+            "active": load_json(STATE_FILE, {}).get("active_gateway") or {},
+            "endpoint": current,
+            "reachable": gateway_ping_ok(),
+            "candidates": rank_gateways(),
+        }
+    if action == "gateway_switch":
+        target = str(payload.get("id") or payload.get("name") or payload.get("endpoint") or "best")
+        if target.lower() in {"best", "auto", "automatic"}:
+            chosen = choose_best_gateway(load_json(STATE_FILE, {}).get("desired") or {}, force=True)
+            if not chosen:
+                raise RuntimeError("no_working_gateway")
+            return {"active": chosen}
+        for row in rank_gateways():
+            if target in {row["id"], row["name"], row["endpoint"]}:
+                switch_gateway(row, verify=True)
+                return {"active": row}
+        raise RuntimeError("gateway_not_found")
+    if action == "reconcile":
+        desired = CentralClient(AgentConfig.load()).desired()
+        return reconcile_desired(desired, force=bool(payload.get("force")))
+    if action == "live_status":
+        desired = load_json(STATE_FILE, {}).get("desired") or {}
+        data = {"runtime": light_runtime_metrics(), "gateway": load_json(STATE_FILE, {}).get("active_gateway") or {}}
+        if payload.get("locations", True) and desired:
+            data["locations"] = location_runtime_rows(desired)
+        return data
     raise RuntimeError("unsupported_central_command")
 
 def process_one_command(client: CentralClient) -> bool:
@@ -1818,10 +1847,11 @@ def menu() -> int:
         print("[5] Remove GANJ locations")
         print("[6] Location catalog")
         print("[7] Sync with central")
-        print("[8] WireGuard status")
-        print("[9] Diagnostics")
-        print("[10] Update")
-        print("[11] Uninstall")
+        print("[8] Gateways / Best Ping")
+        print("[9] WireGuard status")
+        print("[10] Diagnostics")
+        print("[11] Update")
+        print("[12] Uninstall")
         print("[0] Exit")
         choice = input("> ").strip()
         try:
@@ -1840,12 +1870,15 @@ def menu() -> int:
             elif choice == "7":
                 print(json.dumps(sync_once(), ensure_ascii=False, indent=2))
             elif choice == "8":
-                print(json.dumps(wg_status(), ensure_ascii=False, indent=2))
+                gateways_list()
+                print("\nUse CLI: ganj-vps gateway-switch best")
             elif choice == "9":
-                diagnostics()
+                print(json.dumps(wg_status(), ensure_ascii=False, indent=2))
             elif choice == "10":
-                return update_self()
+                diagnostics()
             elif choice == "11":
+                return update_self()
+            elif choice == "12":
                 return uninstall()
             elif choice == "0":
                 return 0
@@ -1877,6 +1910,16 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--yes", action="store_true")
     sub.add_parser("locations-list")
     sub.add_parser("locations-plan")
+    sub.add_parser("gateways")
+    ga = sub.add_parser("gateway-add")
+    ga.add_argument("endpoint")
+    ga.add_argument("--name", default="")
+    gr = sub.add_parser("gateway-remove")
+    gr.add_argument("identifier")
+    gs = sub.add_parser("gateway-switch")
+    gs.add_argument("identifier", nargs="?", default="best")
+    rec = sub.add_parser("reconcile")
+    rec.add_argument("--force", action="store_true")
     return p
 
 def main() -> int:
@@ -1920,6 +1963,18 @@ def main() -> int:
             return locations_list()
         if args.cmd == "locations-plan":
             return locations_plan()
+        if args.cmd == "gateways":
+            return gateways_list()
+        if args.cmd == "gateway-add":
+            return gateway_add(args.endpoint, args.name)
+        if args.cmd == "gateway-remove":
+            return gateway_remove(args.identifier)
+        if args.cmd == "gateway-switch":
+            return gateway_switch(args.identifier)
+        if args.cmd == "reconcile":
+            desired = CentralClient(AgentConfig.load()).desired()
+            print(json.dumps(reconcile_desired(desired, force=bool(args.force)), ensure_ascii=False, indent=2))
+            return 0
         if args.cmd == "update":
             return update_self()
         if args.cmd == "uninstall":
