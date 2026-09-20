@@ -1,6 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import ganj_vps
+import panel_sync
 from panel_sync import _alloc_ports, _location_map, PasarGuardAdapter
 
 
@@ -26,6 +29,7 @@ class LocationTests(unittest.TestCase):
 
 class PasarGuardGenerationTests(unittest.TestCase):
     def test_install_generates_only_ganj_owned_objects(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-test-"))
         adapter = PasarGuardAdapter({
             "url": "http://127.0.0.1:8000",
             "username": "test",
