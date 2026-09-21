@@ -646,12 +646,38 @@ async def events(request: Request) -> StreamingResponse:
     )
 
 
-if __name__ == "__main__":
+def _cli() -> int:
+    import argparse
+    import getpass
+
+    parser = argparse.ArgumentParser(prog="web_panel.py")
+    sub = parser.add_subparsers(dest="cmd")
+    user = sub.add_parser("set-user")
+    user.add_argument("--username", required=True)
+    serve = sub.add_parser("serve")
+    serve.add_argument("--host", default=BIND_HOST)
+    serve.add_argument("--port", type=int, default=BIND_PORT)
+    args = parser.parse_args()
+
+    if args.cmd == "set-user":
+        first = getpass.getpass("Web panel password: ")
+        second = getpass.getpass("Repeat password: ")
+        if first != second:
+            raise SystemExit("Passwords do not match.")
+        configure_web_user(args.username, first)
+        print("Web panel user configured.")
+        return 0
+
     import uvicorn
     uvicorn.run(
         "web_panel:app",
-        host=BIND_HOST,
-        port=BIND_PORT,
+        host=getattr(args, "host", BIND_HOST),
+        port=getattr(args, "port", BIND_PORT),
         proxy_headers=True,
         forwarded_allow_ips="127.0.0.1,::1",
     )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())
