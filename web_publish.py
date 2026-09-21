@@ -158,8 +158,8 @@ frontend ft_ganj_web_http
     bind 0.0.0.0:80
     bind [::]:80 v6only
     acl ganj_acme path_beg /.well-known/acme-challenge/
-    use_backend be_ganj_web_acme if ganj_acme
     http-request redirect scheme https code 301 unless ganj_acme
+    use_backend be_ganj_web_acme if ganj_acme
 
 backend be_ganj_web_acme
     mode http
