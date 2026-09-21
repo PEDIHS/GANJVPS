@@ -299,7 +299,7 @@ def _safe_panel_snapshot() -> dict[str, Any]:
     profile = ganj_vps.panel_profile()
     safe_profile = {
         k: v for k, v in profile.items()
-        if k not in {"password", "token", "secret"}
+        if k not in {"password", "token", "secret", "url"}
     }
     try:
         adapter = adapter_from_profile(profile)
@@ -337,6 +337,15 @@ def _dashboard_payload() -> dict[str, Any]:
     wg = dict(snap.get("wireguard") or {})
     if transfer is not None:
         wg["rx_bytes"], wg["tx_bytes"] = transfer
+    raw_gateway = snap.get("gateway") or {}
+    safe_gateway = {
+        k: v for k, v in raw_gateway.items()
+        if k not in {"endpoint", "ip", "host", "url"}
+    }
+    safe_wg = {
+        k: v for k, v in wg.items()
+        if k not in {"endpoint", "peer_endpoint", "public_key", "peer_public_key"}
+    }
     return {
         "ts": _now(),
         "version": ganj_vps.APP_VERSION,
@@ -346,8 +355,8 @@ def _dashboard_payload() -> dict[str, Any]:
         "system": _system_metrics(),
         "license": _license_usage(desired),
         "runtime": snap.get("runtime") or {},
-        "wireguard": wg,
-        "gateway": snap.get("gateway") or {},
+        "wireguard": safe_wg,
+        "gateway": safe_gateway,
         "gateway_reachable": bool(snap.get("gateway_reachable")),
         "gateway_latency_ms": snap.get("gateway_latency_ms"),
         "locations": snap.get("locations_runtime") or [],
@@ -363,8 +372,24 @@ def _dashboard_payload() -> dict[str, Any]:
 
 def _gateway_payload() -> dict[str, Any]:
     rows = ganj_vps.rank_gateways()
-    current = ganj_vps._current_wireguard_endpoint()
-    return {"current": current, "items": rows}
+    current_endpoint = ganj_vps._current_wireguard_endpoint()
+    items = []
+    current_id = None
+    for row in rows:
+        active = str(row.get("endpoint") or "") == str(current_endpoint or "")
+        if active:
+            current_id = row.get("id")
+        item = {
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "latency_ms": row.get("latency_ms"),
+            "source": row.get("source"),
+            "active": active,
+        }
+        if str(row.get("source") or "") == "local":
+            item["endpoint"] = row.get("endpoint")
+        items.append(item)
+    return {"current_id": current_id, "items": items}
 
 
 def _capture(fn, *args, **kwargs) -> tuple[Any, str]:
@@ -680,6 +705,28 @@ def diagnostics(request: Request) -> dict[str, Any]:
     return {"checks": checks, "dashboard": snap, "panel": panel}
 
 
+def _redact_text(value: str) -> str:
+    text = str(value or "")
+    cfg = ganj_vps.load_json(ganj_vps.CONFIG_FILE, {})
+    central = str(cfg.get("central") or "")
+    if central:
+        text = text.replace(central, "[GANJ CONTROL]")
+        try:
+            from urllib.parse import urlparse
+            host = str(urlparse(central).hostname or "")
+            if host:
+                text = text.replace(host, "[GANJ CONTROL]")
+        except Exception:
+            pass
+    import re
+    text = re.sub(
+        r"(?i)(authorization|token|password|secret)(\s*[:=]\s*)[^\s,;]+",
+        r"\1\2[REDACTED]",
+        text,
+    )
+    return text
+
+
 @app.get("/api/logs")
 def logs(request: Request, lines: int = 100) -> dict[str, Any]:
     _require_session(request)
@@ -690,7 +737,7 @@ def logs(request: Request, lines: int = 100) -> dict[str, Any]:
         text=True,
         timeout=8,
     )
-    return {"lines": (p.stdout or "")[-50000:]}
+    return {"lines": _redact_text((p.stdout or "")[-50000:])}
 
 
 @app.post("/api/action")
