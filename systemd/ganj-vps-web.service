@@ -1,0 +1,22 @@
+[Unit]
+Description=GANJ VPS Representative Web Panel
+After=network-online.target ganj-vps-agent.service
+Wants=network-online.target
+Requires=ganj-vps-agent.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/ganj-vps
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/ganj-vps/venv/bin/uvicorn web_panel:app --host 127.0.0.1 --port 9877 --proxy-headers --forwarded-allow-ips=127.0.0.1,::1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
