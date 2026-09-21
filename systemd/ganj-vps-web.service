@@ -17,6 +17,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 UMask=0077
+MemoryMax=256M
+TasksMax=128
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target
