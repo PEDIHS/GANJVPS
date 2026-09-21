@@ -19,11 +19,9 @@ GANJ_REMARK_PREFIX = "GANJ "
 REQUIRED_USER_PROTOCOL = "vless"
 
 # Canonical GANJ location catalog. The order is also the deterministic
-# user-facing inbound port order: 6000, 6001, ... 6029. Port 6030 is
-# intentionally kept free for one future catalog location without reshuffling
-# any existing country.
+# user-facing inbound port order: 6000, 6001, ... 6039.
 PORT_RANGE_START = 6000
-PORT_RANGE_END = 6030
+PORT_RANGE_END = 6039
 LOCATION_CATALOG = {
     "DE": {"country": "Germany", "city": "Berlin", "flag": "🇩🇪"},
     "NL": {"country": "Netherlands", "city": "Amsterdam", "flag": "🇳🇱"},
@@ -55,6 +53,16 @@ LOCATION_CATALOG = {
     "JP": {"country": "Japan", "city": "Tokyo", "flag": "🇯🇵"},
     "KR": {"country": "South Korea", "city": "Seoul", "flag": "🇰🇷"},
     "AU": {"country": "Australia", "city": "Canberra", "flag": "🇦🇺"},
+    "BR": {"country": "Brazil", "city": "São Paulo", "flag": "🇧🇷"},
+    "MX": {"country": "Mexico", "city": "Mexico City", "flag": "🇲🇽"},
+    "IN": {"country": "India", "city": "New Delhi", "flag": "🇮🇳"},
+    "HK": {"country": "Hong Kong", "city": "Hong Kong", "flag": "🇭🇰"},
+    "TW": {"country": "Taiwan", "city": "Taipei", "flag": "🇹🇼"},
+    "TH": {"country": "Thailand", "city": "Bangkok", "flag": "🇹🇭"},
+    "MY": {"country": "Malaysia", "city": "Kuala Lumpur", "flag": "🇲🇾"},
+    "ID": {"country": "Indonesia", "city": "Jakarta", "flag": "🇮🇩"},
+    "ZA": {"country": "South Africa", "city": "Pretoria", "flag": "🇿🇦"},
+    "UA": {"country": "Ukraine", "city": "Kyiv", "flag": "🇺🇦"},
 }
 PREFERRED_LOCAL_PORTS = {
     code: PORT_RANGE_START + index
@@ -98,6 +106,7 @@ def _location_map(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         port = int(x.get("port") or 0)
         enabled = bool(x.get("enabled", True))
+        central_available = x.get("available")
         meta = LOCATION_CATALOG.get(code) or {}
         out.append({
             "country_code": code,
@@ -106,7 +115,10 @@ def _location_map(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "flag": str(x.get("flag") or meta.get("flag") or ""),
             "port": port,
             "enabled": enabled,
-            "available": bool(enabled and port),
+            "available": bool(
+                enabled and port and
+                (bool(central_available) if central_available is not None else True)
+            ),
         })
     return out
 
