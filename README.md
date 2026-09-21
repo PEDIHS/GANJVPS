@@ -173,3 +173,24 @@ ganj-vps web-status
 ganj-vps web-cert-refresh
 ganj-vps web-unpublish
 ```
+
+
+## Central-managed representative Web Login
+
+The main control panel can define the representative Web Panel username/password
+while creating an enrollment token and can reset it later from the representative
+row. The plaintext password is accepted only for the HTTPS admin request and is
+immediately converted to Argon2id; Central stores only the hash.
+
+Pending representatives retain the hashed login on the enrollment token. During
+enrollment it is copied to the managed node and queued as the allow-listed
+`web_credentials_set` command. Existing representatives receive the same command
+through the normal outbound Agent command queue. The node validates that the
+payload is an Argon2 hash, writes `/etc/ganj-vps/web-auth.json` with mode 0600,
+and restarts only `ganj-vps-web.service` so previous Web Panel sessions are
+invalidated.
+
+Production PANEL Gateway requires the extra dependency listed in
+`deploy/panel-gateway/requirements-extra.txt`, and the corresponding database,
+API and admin-UI changes are tracked in
+`deploy/panel-gateway/ganj-central-web-login-20260921.patch`.
