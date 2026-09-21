@@ -1,0 +1,68 @@
+--- a/app/supported_locations.py
++++ b/app/supported_locations.py
+@@ -2,5 +2,6 @@
+     'DE','NL','FR','GB','TR','FI','SE','CH','AT','BE',
+     'PL','IT','ES','RO','BG','CZ','NO','DK','IE','LT',
+     'LV','EE','US','CA','AE','RU','SG','JP','KR','AU',
++    'BR','MX','IN','HK','TW','TH','MY','ID','ZA','UA',
+ )
+ TOP_LOCATION_SET = frozenset(TOP_LOCATION_CODES)
+--- a/app/location_sync.py
++++ b/app/location_sync.py
+@@ -20,7 +20,16 @@
+ except Exception:
+     pass
+ 
+-RESERVED = {'FR':1080,'NL':1081,'DE':1082}
++RESERVED = {
++    'FR':1080,'NL':1081,'DE':1082,
++    'BR':1101,'MX':1106,'IN':1107,'HK':1110,'TW':1116,
++    'TH':1117,'MY':1118,'ID':1121,'ZA':1123,'UA':1125,
++}
++COUNTRY_NAMES.update({
++    'BR':'Brazil','MX':'Mexico','IN':'India','HK':'Hong Kong',
++    'TW':'Taiwan','TH':'Thailand','MY':'Malaysia','ID':'Indonesia',
++    'ZA':'South Africa','UA':'Ukraine',
++})
+ 
+ def next_port(used):
+     p=DYNAMIC_PORT_START
+--- a/app/ganj_nodes.py
++++ b/app/ganj_nodes.py
+@@ -12,7 +12,7 @@
+ from pydantic import BaseModel, Field
+ from sqlalchemy import select, text, update
+ 
+-from .db import SessionLocal, GanjEnrollmentToken, GanjManagedNode, GanjNodeCommand, Location
++from .db import SessionLocal, GanjEnrollmentToken, GanjManagedNode, GanjNodeCommand, Location, PoolState
+ from .timeutil import utcnow
+ from .supported_locations import TOP_LOCATION_SET
+ 
+@@ -351,12 +351,23 @@
+     node_id = node_auth(x_ganj_node_id, authorization, request)
+     with SessionLocal() as db:
+         node = db.get(GanjManagedNode, node_id)
+-        rows = db.scalars(
+-            select(Location).where(Location.country_code.in_(TOP_LOCATION_SET)).order_by(Location.sort_order)
++        rows = db.execute(
++            select(Location, PoolState)
++            .outerjoin(PoolState, PoolState.location_id == Location.id)
++            .where(Location.country_code.in_(TOP_LOCATION_SET))
++            .order_by(Location.sort_order)
+         ).all()
+         locations = [
+-            {'country_code': x.country_code, 'name': x.name, 'port': x.internal_port, 'enabled': bool(x.enabled)}
+-            for x in rows
++            {
++                'country_code': loc.country_code,
++                'name': loc.name,
++                'port': loc.internal_port,
++                'enabled': bool(loc.enabled),
++                'available': bool(
++                    loc.enabled and pool and pool.current_config_id is not None
++                ),
++            }
++            for loc, pool in rows
+         ]
+         return {
+             'revision': node.desired_revision,
