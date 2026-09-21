@@ -546,6 +546,82 @@ class LocationTests(unittest.TestCase):
             panel_sync.system_listening_ports = old
 
 
+class PasarGuardGroupSyncTests(unittest.TestCase):
+    def test_group_sync_mirrors_template_membership(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-groups-test-"))
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 0, "base_port": 6000,
+        })
+        groups = [
+            {
+                "id": 1, "name": "VIP",
+                "inbound_tags": ["template", "other-vip"],
+                "is_disabled": False, "total_users": 4,
+            },
+            {
+                "id": 2, "name": "Other",
+                "inbound_tags": ["other-only"],
+                "is_disabled": False, "total_users": 2,
+            },
+            {
+                "id": 3, "name": "CIP",
+                "inbound_tags": ["template"],
+                "is_disabled": False, "total_users": 3,
+            },
+        ]
+        adapter.get_groups = lambda: copy.deepcopy(groups)
+
+        def update_group(payload):
+            idx = next(i for i, row in enumerate(groups) if int(row["id"]) == int(payload["id"]))
+            current = copy.deepcopy(groups[idx])
+            current["name"] = payload["name"]
+            current["inbound_tags"] = list(payload["inbound_tags"])
+            current["is_disabled"] = bool(payload["is_disabled"])
+            groups[idx] = current
+
+        adapter.update_group = update_group
+        snapshot = adapter.template_groups()
+        result = adapter.sync_template_groups(
+            {"ganj-de 🇩🇪 Germany — Berlin", "ganj-fr 🇫🇷 France — Paris"},
+            snapshot,
+        )
+
+        vip = next(x for x in groups if x["id"] == 1)
+        other = next(x for x in groups if x["id"] == 2)
+        cip = next(x for x in groups if x["id"] == 3)
+        for row in (vip, cip):
+            self.assertIn("ganj-de 🇩🇪 Germany — Berlin", row["inbound_tags"])
+            self.assertIn("ganj-fr 🇫🇷 France — Paris", row["inbound_tags"])
+        self.assertNotIn("ganj-de 🇩🇪 Germany — Berlin", other["inbound_tags"])
+        self.assertEqual(result["updated_groups"], [1, 3])
+        self.assertTrue(result["verified"])
+
+    def test_group_sync_is_idempotent(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-groups-idem-"))
+        tag = "ganj-de 🇩🇪 Germany — Berlin"
+        groups = [{
+            "id": 1, "name": "VIP",
+            "inbound_tags": ["template", tag],
+            "is_disabled": False,
+        }]
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test", "password": "test",
+            "core_id": 1, "template_inbound_tag": "template",
+            "template_host_id": 0, "base_port": 6000,
+        })
+        adapter.get_groups = lambda: copy.deepcopy(groups)
+        calls = []
+        adapter.update_group = lambda payload: calls.append(copy.deepcopy(payload))
+        result = adapter.sync_template_groups({tag}, adapter.template_groups())
+        self.assertEqual(calls, [])
+        self.assertEqual(result["updated_groups"], [])
+        self.assertTrue(result["verified"])
+
+
 class PasarGuardGenerationTests(unittest.TestCase):
     def test_unrelated_flag_prefixed_objects_are_not_ganj_owned(self):
         self.assertIsNone(panel_sync._country_from_ganj_remark("🇩🇪 Personal"))
@@ -614,6 +690,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         }
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: []
+        adapter.template_groups = lambda: []
         captured = {}
         def apply_core(c, config):
             core["config"] = config
@@ -658,6 +735,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         }
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: []
+        adapter.template_groups = lambda: []
         adapter.update_core = lambda c, config: core.update({"config": config})
         adapter.restart_core = lambda c, config: None
         result = adapter.install_locations([
@@ -708,6 +786,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         }]
         adapter.get_core = lambda: core
         adapter.get_hosts = lambda: list(hosts)
+        adapter.template_groups = lambda: []
         adapter.update_core = lambda c, config: core.update({"config": config})
         adapter.restart_core = lambda c, config: None
         def delete_host(host_id):
@@ -813,6 +892,7 @@ class PasarGuardGenerationTests(unittest.TestCase):
         ]
         adapter.get_core = lambda: copy.deepcopy(core)
         adapter.get_hosts = lambda: copy.deepcopy(hosts)
+        adapter.template_groups = lambda: []
         adapter.update_core = lambda c, config: core.update({"config": copy.deepcopy(config)})
         def delete_host(host_id):
             hosts[:] = [x for x in hosts if int(x.get("id") or 0) != int(host_id)]
