@@ -269,7 +269,7 @@ def _apply_haproxy(text: str) -> None:
 
 def _ensure_http_challenge_route() -> None:
     current = HAPROXY_CFG.read_text(encoding="utf-8")
-    base = _strip_web_blocks(current)
+    base = _strip_block(current, HTTP_BEGIN, HTTP_END).rstrip() + "\n"
     if _port80_conflict(base):
         owner = _socket_owner(80)
         raise RuntimeError(
@@ -412,20 +412,35 @@ def configure(
         raise RuntimeError("haproxy_config_not_found")
     _check_local_web()
 
-    if auto_cert:
-        cert, key, email = _issue_certbot(domain)
-        cert_method = "certbot"
-    else:
-        if cert_path and key_path:
-            cert, key = Path(cert_path), Path(key_path)
-        else:
-            cert, key = _cert_paths(domain)
-        email = None
-        cert_method = "existing"
+    try:
+        socket.getaddrinfo(domain, 80, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise RuntimeError("web_domain_dns_not_resolved") from exc
 
-    pem = _build_pem(domain, cert, key)
-    desired = _full_haproxy_config(domain, pem)
-    _apply_haproxy(desired)
+    original_haproxy = HAPROXY_CFG.read_text(encoding="utf-8")
+    try:
+        if auto_cert:
+            cert, key, email = _issue_certbot(domain)
+            cert_method = "certbot"
+        else:
+            if cert_path and key_path:
+                cert, key = Path(cert_path), Path(key_path)
+            else:
+                cert, key = _cert_paths(domain)
+            email = None
+            cert_method = "existing"
+
+        pem = _build_pem(domain, cert, key)
+        desired = _full_haproxy_config(domain, pem)
+        _apply_haproxy(desired)
+    except Exception:
+        try:
+            current = HAPROXY_CFG.read_text(encoding="utf-8")
+            if current != original_haproxy:
+                _apply_haproxy(original_haproxy)
+        except Exception:
+            pass
+        raise
 
     payload = {
         "domain": domain,
