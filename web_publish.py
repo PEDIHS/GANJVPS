@@ -337,7 +337,7 @@ def _issue_certbot(domain: str) -> tuple[Path, Path, str]:
 
     _ensure_http_challenge_route()
 
-    email = f"ganj-{secrets.token_hex(5)}@example.com"
+    email = f"ganj-{secrets.token_hex(5)}@pedramhs.ir"
     argv = [
         "certbot",
         "certonly",
