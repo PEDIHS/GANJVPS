@@ -198,7 +198,7 @@ class GatewayManagerTests(unittest.TestCase):
                 calls.append(ganj_vps.locations_signature(rows))
                 return {"installed": rows}
             def status(self):
-                return {"managed_inbounds": 30, "type": "sanaei"}
+                return {"managed_inbounds": 40, "type": "sanaei"}
         try:
             ganj_vps.PANEL_SECRET_FILE = tmpdir / "panel.json"
             ganj_vps.PANEL_SECRET_FILE.write_text("{}", encoding="utf-8")
@@ -454,10 +454,15 @@ class InstallerUXTests(unittest.TestCase):
 
 class LocationTests(unittest.TestCase):
     def test_top_locations_are_unique_and_curated(self):
-        self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 30)
-        self.assertEqual(len(set(ganj_vps.TOP_LOCATIONS)), 30)
+        self.assertEqual(len(ganj_vps.TOP_LOCATIONS), 40)
+        self.assertEqual(len(set(ganj_vps.TOP_LOCATIONS)), 40)
         self.assertIn("DE", ganj_vps.TOP_LOCATIONS)
         self.assertIn("US", ganj_vps.TOP_LOCATIONS)
+
+        self.assertIn("BR", ganj_vps.TOP_LOCATIONS)
+        self.assertIn("UA", ganj_vps.TOP_LOCATIONS)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["BR"], 6030)
+        self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["UA"], 6039)
 
     def test_location_map_keeps_unavailable_catalog_rows(self):
         rows = _location_map([
@@ -474,6 +479,20 @@ class LocationTests(unittest.TestCase):
             "country_code": "NL", "name": "Netherlands", "city": "Amsterdam",
             "flag": "🇳🇱", "port": 1081, "enabled": False, "available": False,
         })
+
+    def test_location_map_honors_central_availability(self):
+        rows = _location_map([
+            {
+                "country_code": "BR",
+                "name": "Brazil",
+                "port": 1101,
+                "enabled": True,
+                "available": False,
+            },
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["enabled"])
+        self.assertFalse(rows[0]["available"])
 
     def test_port_allocator_does_not_collide(self):
         used = {20000, 20002}
@@ -898,7 +917,7 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["FR"], 6002)
         self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["GB"], 6003)
         self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["US"], 6022)
-        self.assertLessEqual(max(panel_sync.PREFERRED_LOCAL_PORTS.values()), 6030)
+        self.assertLessEqual(max(panel_sync.PREFERRED_LOCAL_PORTS.values()), 6039)
         self.assertEqual(panel_sync.DISPLAY_LABELS["FR"], "🇫🇷 France — Paris")
         self.assertEqual(panel_sync.DISPLAY_LABELS["NL"], "🇳🇱 Netherlands — Amsterdam")
         self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany — Berlin")

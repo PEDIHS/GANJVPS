@@ -65,3 +65,7 @@ allowed and every other location timed out from representative nodes.
 ## Central runtime stability patch
 
 `ganj-central-runtime-stability-20260920.patch` tracks the live production fixes that prevent Xray restart churn from latency/quality telemetry, keep a selected route through transient `suspect` health until the configured failure threshold, debounce real runtime configuration changes, and use `geoiplookup6` for IPv6 egress classification.
+
+## 40-location catalog and real availability
+
+`ganj-central-40-locations-20260921.patch` expands production Central from 30 to 40 locations, adds stable internal SOCKS ports for Brazil, Mexico, India, Hong Kong, Taiwan, Thailand, Malaysia, Indonesia, South Africa and Ukraine, and exposes an explicit `available` flag derived from the current Pool selection. Representative nodes therefore pre-create Host/Inbound placeholders without treating a location as usable until Central has a real upstream.

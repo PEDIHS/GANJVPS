@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import hashlib
+import io
 import json
 import os
 import platform
@@ -14,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -31,7 +34,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.4.6"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -44,6 +47,7 @@ WG_CONF = Path("/etc/wireguard/ganj-vps.conf")
 PANEL_SECRET_FILE = ETC_DIR / "panel.json"
 STATE_FILE = STATE_DIR / "state.json"
 GATEWAYS_FILE = ETC_DIR / "gateways.json"
+LOCATION_HEALTH_FILE = STATE_DIR / "location-health.json"
 
 DEFAULT_CENTRAL = "https://turkey.ufo-tuning.ir/ganj-agent"
 HEARTBEAT_INTERVAL = 15
@@ -52,15 +56,18 @@ WIREGUARD_REPAIR_INTERVAL = 60
 GATEWAY_EVALUATION_INTERVAL = 60
 GATEWAY_SWITCH_COOLDOWN = 300
 GATEWAY_SWITCH_HYSTERESIS_MS = 15.0
-LOCATION_PROBE_INTERVAL = 10
-LOCATION_PROBE_TIMEOUT = 1.2
+LOCATION_PROBE_INTERVAL = 5
+LOCATION_PROBE_TIMEOUT = 2.5
+LOCATION_HEALTH_OFFLINE_AFTER = 3
+LOCATION_HEALTH_STALE_SECONDS = 20
+LOCATION_DEGRADED_LATENCY_MS = 800.0
 AUTO_UPDATE_CHECK_INTERVAL = 3600
 REMOTE_AGENT_URL = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/ganj_vps.py"
 
 TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
 _WG_RATE_STATE: dict[str, float | int] = {}
-_LOCATION_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "signature": "", "rows": []}
+_PANEL_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
 
 _TTY = bool(getattr(sys.stdout, "isatty", lambda: False)())
 _RESET = "\033[0m" if _TTY else ""
@@ -395,7 +402,7 @@ def configure_panel(force_manual: bool = False, auto_mode: bool = False) -> int:
     print(f"  {_DIM}Inbounds{_RESET}   {verified.get('inbounds', 0)}")
     if kind == "pasarguard":
         print(f"  {_DIM}Hosts{_RESET}      {verified.get('hosts', 0)}")
-    print(f"  {_DIM}Ports{_RESET}      6000–6029  ·  6030 reserved")
+    print(f"  {_DIM}Ports{_RESET}      6000–6039  ·  40 locations")
 
     if CONFIG_FILE.exists() and SECRET_FILE.exists():
         try:
@@ -460,14 +467,19 @@ def locations_from_desired(data: dict[str, Any]) -> list[dict[str, Any]]:
         source = published.get(code)
         raw = dict(source or {})
         port = int(raw.get("port") or 0)
-        available = bool(source is not None and raw.get("enabled", True) and port > 0)
+        enabled = bool(source is not None and raw.get("enabled", True))
+        central_available = raw.get("available")
+        available = bool(
+            enabled and port > 0 and
+            (bool(central_available) if central_available is not None else True)
+        )
         raw.update({
             "country_code": code,
             "name": meta["country"],
             "city": meta["city"],
             "flag": meta["flag"],
             "port": port,
-            "enabled": available,
+            "enabled": enabled,
             "available": available,
         })
         rows.append(raw)
@@ -1312,25 +1324,42 @@ def socks5_latency_ms(
         return None
 
 
-def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
+def _health_state_style(state: str) -> tuple[str, str]:
+    state = str(state or "CHECKING").upper()
+    if state == "ONLINE":
+        return "● ONLINE", _EMERALD2
+    if state == "DEGRADED":
+        return "◐ DEGRADED", _GOLD2
+    if state == "OFFLINE":
+        return "● OFFLINE", _RED
+    if state == "NO_UPSTREAM":
+        return "○ NO UP", _DIM
+    return "◌ CHECK", _DIM
+
+
+def refresh_location_health_cache(desired: dict[str, Any]) -> dict[str, Any]:
     rows = locations_from_desired(desired)
     signature = locations_signature(rows)
-    now = time.monotonic()
-    cached_at = float(_LOCATION_PROBE_CACHE.get("at") or 0.0)
-    if (
-        _LOCATION_PROBE_CACHE.get("signature") == signature
-        and now - cached_at < LOCATION_PROBE_INTERVAL
-    ):
-        probes = {
-            str(x.get("country_code")): x.get("proxy_latency_ms")
-            for x in (_LOCATION_PROBE_CACHE.get("rows") or [])
-        }
-    else:
-        probes: dict[str, float | None] = {}
-        available = [x for x in rows if x.get("available") and int(x.get("port") or 0) > 0]
-        with ThreadPoolExecutor(max_workers=min(10, max(1, len(available)))) as pool:
+    previous = load_json(LOCATION_HEALTH_FILE, {})
+    previous_rows = {
+        str(x.get("country_code") or ""): x
+        for x in (previous.get("rows") or [])
+        if isinstance(x, dict)
+    }
+
+    available = [
+        x for x in rows
+        if x.get("available") and int(x.get("port") or 0) > 0
+    ]
+    probes: dict[str, float | None] = {}
+    if available:
+        with ThreadPoolExecutor(max_workers=min(20, len(available))) as pool:
             futures = {
-                pool.submit(socks5_latency_ms, "10.60.0.1", int(row["port"])): str(row["country_code"])
+                pool.submit(
+                    socks5_latency_ms,
+                    "10.60.0.1",
+                    int(row["port"]),
+                ): str(row["country_code"])
                 for row in available
             }
             for future in as_completed(futures):
@@ -1339,36 +1368,150 @@ def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
                     probes[code] = future.result()
                 except Exception:
                     probes[code] = None
-        _LOCATION_PROBE_CACHE.update({
-            "at": now,
-            "signature": signature,
-            "rows": [
-                {"country_code": code, "proxy_latency_ms": latency}
-                for code, latency in probes.items()
-            ],
-        })
 
-    ports = {int(PREFERRED_LOCAL_PORTS[x["country_code"]]) for x in rows}
-    connections = established_connections_by_port(ports)
     current_host = _gateway_host({"endpoint": _current_wireguard_endpoint()})
     gateway_latency = ping_latency_ms(current_host) if current_host else None
+    gateway_ok = gateway_tunnel_ok()
+    now_epoch = int(time.time())
+    result_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        code = str(row["country_code"])
+        prev = previous_rows.get(code) or {}
+        available_now = bool(row.get("available"))
+        latency = probes.get(code) if available_now else None
+        failures = int(prev.get("failures") or 0)
+        successes = int(prev.get("successes") or 0)
+        last_success = int(prev.get("last_success") or 0)
+        smoothed = prev.get("smoothed_latency_ms")
+
+        if not available_now:
+            state = "NO_UPSTREAM"
+            failures = 0
+            successes = 0
+            smoothed = None
+        elif latency is not None:
+            failures = 0
+            successes += 1
+            last_success = now_epoch
+            if smoothed is None:
+                smoothed = float(latency)
+            else:
+                smoothed = (0.65 * float(smoothed)) + (0.35 * float(latency))
+            state = (
+                "DEGRADED"
+                if float(smoothed) >= LOCATION_DEGRADED_LATENCY_MS
+                else "ONLINE"
+            )
+        else:
+            failures += 1
+            successes = 0
+            recently_good = bool(last_success and now_epoch - last_success <= 45)
+            state = (
+                "DEGRADED"
+                if failures < LOCATION_HEALTH_OFFLINE_AFTER and recently_good
+                else "OFFLINE"
+            )
+
+        proxy_latency = (
+            round(float(smoothed), 1)
+            if smoothed is not None and state in {"ONLINE", "DEGRADED"}
+            else None
+        )
+        total_latency = None
+        if gateway_latency is not None and proxy_latency is not None:
+            total_latency = round(float(gateway_latency) + proxy_latency, 1)
+
+        result_rows.append({
+            "country_code": code,
+            "state": state,
+            "available": available_now,
+            "gateway_port": int(row.get("port") or 0) if available_now else None,
+            "proxy_latency_ms": proxy_latency,
+            "probe_latency_ms": latency,
+            "total_latency_ms": total_latency,
+            "failures": failures,
+            "successes": successes,
+            "last_success": last_success or None,
+            "updated_at": now_epoch,
+        })
+
+    payload = {
+        "signature": signature,
+        "updated_at": now_epoch,
+        "gateway_reachable": bool(gateway_ok),
+        "gateway_latency_ms": gateway_latency,
+        "rows": result_rows,
+    }
+    save_json(LOCATION_HEALTH_FILE, payload)
+    return payload
+
+
+def _location_health_worker() -> None:
+    while True:
+        try:
+            state = load_json(STATE_FILE, {})
+            desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
+            if desired:
+                refresh_location_health_cache(desired)
+        except Exception:
+            pass
+        time.sleep(LOCATION_PROBE_INTERVAL)
+
+
+def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = locations_from_desired(desired)
+    signature = locations_signature(rows)
+    cache = load_json(LOCATION_HEALTH_FILE, {})
+    age = max(0, int(time.time()) - int(cache.get("updated_at") or 0))
+
+    if (
+        cache.get("signature") != signature
+        or not cache.get("rows")
+        or age > LOCATION_HEALTH_STALE_SECONDS
+    ):
+        try:
+            cache = refresh_location_health_cache(desired)
+        except Exception:
+            cache = {}
+
+    health_by_code = {
+        str(x.get("country_code") or ""): x
+        for x in (cache.get("rows") or [])
+        if isinstance(x, dict)
+    }
+    ports = {
+        int(PREFERRED_LOCAL_PORTS[x["country_code"]])
+        for x in rows
+        if x["country_code"] in PREFERRED_LOCAL_PORTS
+    }
+    connections = established_connections_by_port(ports)
     out = []
     for row in rows:
         code = str(row["country_code"])
         local_port = int(PREFERRED_LOCAL_PORTS[code])
-        proxy_latency = probes.get(code) if row.get("available") else None
-        total_latency = None
-        if gateway_latency is not None and proxy_latency is not None:
-            total_latency = round(float(gateway_latency) + float(proxy_latency), 1)
+        health = health_by_code.get(code) or {}
+        state = str(
+            health.get("state")
+            or ("NO_UPSTREAM" if not row.get("available") else "CHECKING")
+        )
         out.append({
             "country_code": code,
             "label": f"{row.get('flag','')} {row.get('name','')} — {row.get('city','')}".strip(),
             "local_port": local_port,
-            "gateway_port": int(row.get("port") or 0) if row.get("available") else None,
+            "gateway_port": (
+                int(row.get("port") or 0)
+                if row.get("available")
+                else None
+            ),
             "available": bool(row.get("available")),
+            "state": state,
             "connections": int(connections.get(local_port, 0)),
-            "proxy_latency_ms": proxy_latency,
-            "total_latency_ms": total_latency,
+            "proxy_latency_ms": health.get("proxy_latency_ms"),
+            "total_latency_ms": health.get("total_latency_ms"),
+            "failures": int(health.get("failures") or 0),
+            "last_success": health.get("last_success"),
+            "updated_at": health.get("updated_at") or cache.get("updated_at"),
         })
     return out
 
@@ -1691,6 +1834,11 @@ def process_one_command(client: CentralClient) -> bool:
 def agent_loop() -> None:
     cfg = AgentConfig.load()
     client = CentralClient(cfg)
+    threading.Thread(
+        target=_location_health_worker,
+        name="ganj-location-health",
+        daemon=True,
+    ).start()
     failures = 0
     last_wg_repair = 0.0
     while True:
@@ -1750,7 +1898,7 @@ def _status_snapshot(include_locations: bool = False) -> dict[str, Any]:
     wg = wg_status()
     desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
     active_gateway = state.get("active_gateway") if isinstance(state.get("active_gateway"), dict) else {}
-    current_host = _gateway_host({"endpoint": _current_wireguard_endpoint()})
+    health = load_json(LOCATION_HEALTH_FILE, {})
     snap: dict[str, Any] = {
         "version": APP_VERSION,
         "node_id": cfg.get("node_id"),
@@ -1759,8 +1907,9 @@ def _status_snapshot(include_locations: bool = False) -> dict[str, Any]:
         "panel_configured": PANEL_SECRET_FILE.exists(),
         "wireguard": wg,
         "gateway": active_gateway,
-        "gateway_reachable": gateway_tunnel_ok(),
-        "gateway_latency_ms": ping_latency_ms(current_host) if current_host else None,
+        "gateway_reachable": bool(health.get("gateway_reachable", wg.get("up"))),
+        "gateway_latency_ms": health.get("gateway_latency_ms"),
+        "health_updated_at": health.get("updated_at"),
         "last_sync": state.get("last_heartbeat"),
         "last_error": state.get("last_error"),
         "desired": desired,
@@ -1773,10 +1922,16 @@ def _status_snapshot(include_locations: bool = False) -> dict[str, Any]:
         except Exception as exc:
             snap["locations_runtime_error"] = type(exc).__name__
     if PANEL_SECRET_FILE.exists():
-        try:
-            snap["panel_status"] = adapter_from_profile(panel_profile()).status()
-        except Exception as exc:
-            snap["panel_status"] = {"ok": False, "error": type(exc).__name__}
+        now = time.monotonic()
+        cached_at = float(_PANEL_STATUS_CACHE.get("at") or 0.0)
+        cached = _PANEL_STATUS_CACHE.get("data")
+        if cached is None or now - cached_at >= 5:
+            try:
+                cached = adapter_from_profile(panel_profile()).status()
+            except Exception as exc:
+                cached = {"ok": False, "error": type(exc).__name__}
+            _PANEL_STATUS_CACHE.update({"at": now, "data": cached})
+        snap["panel_status"] = cached
     return snap
 
 
@@ -1798,76 +1953,138 @@ def _print_status_snapshot(snap: dict[str, Any]) -> None:
     panel = snap.get("panel") or {}
     ps = snap.get("panel_status") or {}
     wg = snap.get("wireguard") or {}
-    print("╭──────────────────── GANJ VPS STATUS ────────────────────╮")
-    print(f"  Agent       v{snap.get('version')}  ·  Node {(snap.get('node_id') or 'not enrolled')[:12]}")
-    print(f"  Panel       {panel.get('name','Unknown'):<20} {'configured' if snap.get('panel_configured') else 'not configured'}")
-    if snap.get("panel_configured"):
-        if ps.get("ok"):
-            print(
-                f"  Panel API   ONLINE  · inbounds {ps.get('inbounds',0)} "
-                f"· GANJ {ps.get('managed_inbounds',0)}"
-            )
-            if ps.get("type") == "pasarguard":
-                print(f"  Hosts       {ps.get('hosts',0)} total · {ps.get('managed_hosts',0)} GANJ")
-        else:
-            print(f"  Panel API   OFFLINE · {ps.get('error','unknown')}")
+
+    print(f"{_GOLD}{_BOLD}╭──────────────────── GANJ VPS · LIVE ────────────────────╮{_RESET}")
+    print(
+        f"  {_GOLD2}Agent{_RESET}   v{snap.get('version')} · "
+        f"Node {(snap.get('node_id') or 'not enrolled')[:12]} · "
+        f"Health {_human_time(snap.get('health_updated_at'))}"
+    )
+    print(
+        f"  {_GOLD2}Panel{_RESET}   {panel.get('name','Unknown'):<18} "
+        f"{_EMERALD2 + 'ONLINE' + _RESET if ps.get('ok') else _RED + 'OFFLINE' + _RESET}"
+        + (
+            f" · {ps.get('managed_inbounds',0)} GANJ inbounds"
+            if ps.get("ok") else f" · {ps.get('error','unknown')}"
+        )
+    )
+    if ps.get("ok") and ps.get("type") == "pasarguard":
+        print(
+            f"  {_GOLD2}Hosts{_RESET}   {ps.get('managed_hosts',0)} GANJ · "
+            f"{ps.get('hosts',0)} total"
+        )
+
     active_gateway = snap.get("gateway") or {}
     gateway_name = active_gateway.get("name") or active_gateway.get("id") or "current"
-    print(
-        f"  WireGuard   {'UP' if wg.get('up') else 'DOWN'}  · "
-        f"Gateway {'ONLINE' if snap.get('gateway_reachable') else 'OFFLINE'}"
-        + (f" · {snap.get('gateway_latency_ms')} ms" if snap.get("gateway_latency_ms") is not None else "")
+    gw_ok = bool(snap.get("gateway_reachable"))
+    gw_color = _EMERALD2 if gw_ok else _RED
+    gw_ping = (
+        f"{float(snap['gateway_latency_ms']):.0f}ms"
+        if snap.get("gateway_latency_ms") is not None else "—"
     )
-    print(f"  Gateway     {gateway_name} · {_current_wireguard_endpoint() or '—'}")
+    print(
+        f"  {_GOLD2}Tunnel{_RESET}  "
+        f"{gw_color}{'ONLINE' if gw_ok else 'OFFLINE'}{_RESET} · "
+        f"{gateway_name} · {gw_ping}"
+    )
+    print(f"           {_DIM}{_current_wireguard_endpoint() or '—'}{_RESET}")
+
     runtime = snap.get("runtime") or {}
     print(
-        f"  Live        ↓ {float(runtime.get('rx_mbps') or 0):.2f} Mbps · "
+        f"  {_GOLD2}Traffic{_RESET} ↓ {float(runtime.get('rx_mbps') or 0):.2f} Mbps · "
         f"↑ {float(runtime.get('tx_mbps') or 0):.2f} Mbps · "
-        f"{int(runtime.get('active_connections') or 0)} connections"
+        f"{int(runtime.get('active_connections') or 0)} active"
     )
-    print(f"  Central     {'configured' if snap.get('central') else 'not enrolled'} · last sync {_human_time(snap.get('last_sync'))}")
-    if snap.get("last_error"):
-        print(f"  Last error  {snap.get('last_error')}")
+    print(
+        f"  {_GOLD2}Central{_RESET} "
+        f"{_EMERALD2 if snap.get('central') else _RED}"
+        f"{'SYNCED' if snap.get('central') else 'NOT ENROLLED'}{_RESET} · "
+        f"{_human_time(snap.get('last_sync'))}"
+    )
+
     if license_info:
-        state = "ACTIVE" if license_info.get("active") else str(license_info.get("reason") or "INACTIVE").upper()
-        print(f"  License     {state} · expires {license_info.get('expires_at') or 'unlimited'}")
-        used = int(license_info.get("traffic_used_bytes") or 0) / (1024**3)
-        limit = license_info.get("traffic_limit_bytes")
-        print(f"  Traffic     {used:.2f} GB / {('∞' if limit is None else f'{int(limit)/(1024**3):.2f} GB')}")
-    locations = ((desired.get("gateway") or {}).get("locations") or [])
-    if locations:
-        print(f"  Locations   {len(locations)} published · desired {desired.get('location') or 'automatic'}")
+        active = bool(license_info.get("active"))
+        color = _EMERALD2 if active else _RED
+        state_text = "ACTIVE" if active else str(license_info.get("reason") or "INACTIVE").upper()
+        print(
+            f"  {_GOLD2}License{_RESET} {color}{state_text}{_RESET} · "
+            f"expires {license_info.get('expires_at') or 'unlimited'}"
+        )
+
     runtime_rows = snap.get("locations_runtime") or []
-    visible = [x for x in runtime_rows if x.get("available") or int(x.get("connections") or 0) > 0]
-    if visible:
-        print("  ───────────────────────────────────────────────────────")
-        print("  Location                    Port   Conn   Proxy    Total")
-        for row in visible:
-            proxy = "—" if row.get("proxy_latency_ms") is None else f"{row['proxy_latency_ms']:.0f}ms"
-            total = "—" if row.get("total_latency_ms") is None else f"{row['total_latency_ms']:.0f}ms"
+    counts = {"ONLINE": 0, "DEGRADED": 0, "OFFLINE": 0, "NO_UPSTREAM": 0, "CHECKING": 0}
+    for row in runtime_rows:
+        state = str(row.get("state") or "CHECKING").upper()
+        counts[state if state in counts else "CHECKING"] += 1
+
+    print(
+        f"  {_GOLD2}Health{_RESET}  "
+        f"{_EMERALD2}{counts['ONLINE']} online{_RESET} · "
+        f"{_GOLD2}{counts['DEGRADED']} degraded{_RESET} · "
+        f"{_RED}{counts['OFFLINE']} offline{_RESET} · "
+        f"{_DIM}{counts['NO_UPSTREAM']} no upstream{_RESET}"
+    )
+
+    if runtime_rows:
+        print(f"{_EMERALD}  ───────────────────────────────────────────────────────{_RESET}")
+        print("  State        Location                    Port   Conn   Ping     Total")
+        for row in runtime_rows:
+            badge, color = _health_state_style(str(row.get("state") or "CHECKING"))
+            ping = (
+                "—"
+                if row.get("proxy_latency_ms") is None
+                else f"{float(row['proxy_latency_ms']):.0f}ms"
+            )
+            total = (
+                "—"
+                if row.get("total_latency_ms") is None
+                else f"{float(row['total_latency_ms']):.0f}ms"
+            )
+            label = str(row.get("label") or "")[:27]
             print(
-                f"  {str(row.get('label') or '')[:27]:<27} "
+                f"  {color}{badge:<11}{_RESET} "
+                f"{label:<27} "
                 f"{int(row.get('local_port') or 0):<6} "
                 f"{int(row.get('connections') or 0):<6} "
-                f"{proxy:<8} {total}"
+                f"{ping:<8} {total}"
             )
     if snap.get("locations_runtime_error"):
-        print(f"  Location probe error: {snap['locations_runtime_error']}")
-    print("╰─────────────────────────────────────────────────────────╯")
+        print(f"  {_RED}Probe error: {snap['locations_runtime_error']}{_RESET}")
+    if snap.get("last_error"):
+        print(f"  {_RED}Last agent error: {snap.get('last_error')}{_RESET}")
+    print(f"{_GOLD}{_BOLD}╰─────────────────────────────────────────────────────────╯{_RESET}")
 
 
 def status(watch: bool = False) -> int:
     if not watch:
         _print_status_snapshot(_status_snapshot(include_locations=True))
         return 0
+    first = True
     try:
+        if _TTY:
+            sys.stdout.write("\033[?25l")
         while True:
-            os.system("clear")
-            _print_status_snapshot(_status_snapshot(include_locations=True))
-            print("\nCtrl+C to return")
-            time.sleep(2)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                _print_status_snapshot(_status_snapshot(include_locations=True))
+                print(f"\n{_DIM}Auto refresh 1s · Ctrl+C to return{_RESET}")
+            frame = buf.getvalue()
+            if _TTY:
+                if first:
+                    sys.stdout.write("\033[2J")
+                sys.stdout.write("\033[H" + frame + "\033[J")
+                sys.stdout.flush()
+            else:
+                print(frame, end="")
+            first = False
+            time.sleep(1)
     except KeyboardInterrupt:
         return 0
+    finally:
+        if _TTY:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+
 
 def update_self() -> int:
     installer = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/install.sh"
@@ -1900,7 +2117,7 @@ def menu() -> int:
         print(f"  {_GOLD}01{_RESET}  Live status               {_DIM}traffic · ping · connections{_RESET}")
         print(f"  {_GOLD}02{_RESET}  Configure panel           {_DIM}auto detect / verify{_RESET}")
         print(f"  {_GOLD}03{_RESET}  Panel status              {_DIM}managed objects{_RESET}")
-        print(f"  {_GOLD}04{_RESET}  Sync 30 locations         {_DIM}ports 6000–6029{_RESET}")
+        print(f"  {_GOLD}04{_RESET}  Sync 40 locations         {_DIM}ports 6000–6039{_RESET}")
         print(f"  {_GOLD}05{_RESET}  Remove GANJ locations")
         print(f"  {_GOLD}06{_RESET}  Location catalog")
         print(f"  {_GOLD}07{_RESET}  Sync with control plane")
