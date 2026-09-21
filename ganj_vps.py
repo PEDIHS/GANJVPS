@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import hashlib
+import io
 import json
 import os
 import platform
@@ -14,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -31,7 +34,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.4.6"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -44,6 +47,7 @@ WG_CONF = Path("/etc/wireguard/ganj-vps.conf")
 PANEL_SECRET_FILE = ETC_DIR / "panel.json"
 STATE_FILE = STATE_DIR / "state.json"
 GATEWAYS_FILE = ETC_DIR / "gateways.json"
+LOCATION_HEALTH_FILE = STATE_DIR / "location-health.json"
 
 DEFAULT_CENTRAL = "https://turkey.ufo-tuning.ir/ganj-agent"
 HEARTBEAT_INTERVAL = 15
@@ -52,15 +56,18 @@ WIREGUARD_REPAIR_INTERVAL = 60
 GATEWAY_EVALUATION_INTERVAL = 60
 GATEWAY_SWITCH_COOLDOWN = 300
 GATEWAY_SWITCH_HYSTERESIS_MS = 15.0
-LOCATION_PROBE_INTERVAL = 10
-LOCATION_PROBE_TIMEOUT = 1.2
+LOCATION_PROBE_INTERVAL = 5
+LOCATION_PROBE_TIMEOUT = 2.5
+LOCATION_HEALTH_OFFLINE_AFTER = 3
+LOCATION_HEALTH_STALE_SECONDS = 20
+LOCATION_DEGRADED_LATENCY_MS = 800.0
 AUTO_UPDATE_CHECK_INTERVAL = 3600
 REMOTE_AGENT_URL = "https://raw.githubusercontent.com/PEDIHS/GANJVPS/main/ganj_vps.py"
 
 TOP_LOCATIONS = list(LOCATION_CATALOG.keys())
 
 _WG_RATE_STATE: dict[str, float | int] = {}
-_LOCATION_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "signature": "", "rows": []}
+_PANEL_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
 
 _TTY = bool(getattr(sys.stdout, "isatty", lambda: False)())
 _RESET = "\033[0m" if _TTY else ""
@@ -460,14 +467,19 @@ def locations_from_desired(data: dict[str, Any]) -> list[dict[str, Any]]:
         source = published.get(code)
         raw = dict(source or {})
         port = int(raw.get("port") or 0)
-        available = bool(source is not None and raw.get("enabled", True) and port > 0)
+        enabled = bool(source is not None and raw.get("enabled", True))
+        central_available = raw.get("available")
+        available = bool(
+            enabled and port > 0 and
+            (bool(central_available) if central_available is not None else True)
+        )
         raw.update({
             "country_code": code,
             "name": meta["country"],
             "city": meta["city"],
             "flag": meta["flag"],
             "port": port,
-            "enabled": available,
+            "enabled": enabled,
             "available": available,
         })
         rows.append(raw)
@@ -1312,25 +1324,42 @@ def socks5_latency_ms(
         return None
 
 
-def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
+def _health_state_style(state: str) -> tuple[str, str]:
+    state = str(state or "CHECKING").upper()
+    if state == "ONLINE":
+        return "● ONLINE", _EMERALD2
+    if state == "DEGRADED":
+        return "◐ DEGRADED", _GOLD2
+    if state == "OFFLINE":
+        return "● OFFLINE", _RED
+    if state == "NO_UPSTREAM":
+        return "○ NO UP", _DIM
+    return "◌ CHECK", _DIM
+
+
+def refresh_location_health_cache(desired: dict[str, Any]) -> dict[str, Any]:
     rows = locations_from_desired(desired)
     signature = locations_signature(rows)
-    now = time.monotonic()
-    cached_at = float(_LOCATION_PROBE_CACHE.get("at") or 0.0)
-    if (
-        _LOCATION_PROBE_CACHE.get("signature") == signature
-        and now - cached_at < LOCATION_PROBE_INTERVAL
-    ):
-        probes = {
-            str(x.get("country_code")): x.get("proxy_latency_ms")
-            for x in (_LOCATION_PROBE_CACHE.get("rows") or [])
-        }
-    else:
-        probes: dict[str, float | None] = {}
-        available = [x for x in rows if x.get("available") and int(x.get("port") or 0) > 0]
-        with ThreadPoolExecutor(max_workers=min(10, max(1, len(available)))) as pool:
+    previous = load_json(LOCATION_HEALTH_FILE, {})
+    previous_rows = {
+        str(x.get("country_code") or ""): x
+        for x in (previous.get("rows") or [])
+        if isinstance(x, dict)
+    }
+
+    available = [
+        x for x in rows
+        if x.get("available") and int(x.get("port") or 0) > 0
+    ]
+    probes: dict[str, float | None] = {}
+    if available:
+        with ThreadPoolExecutor(max_workers=min(20, len(available))) as pool:
             futures = {
-                pool.submit(socks5_latency_ms, "10.60.0.1", int(row["port"])): str(row["country_code"])
+                pool.submit(
+                    socks5_latency_ms,
+                    "10.60.0.1",
+                    int(row["port"]),
+                ): str(row["country_code"])
                 for row in available
             }
             for future in as_completed(futures):
@@ -1339,36 +1368,150 @@ def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
                     probes[code] = future.result()
                 except Exception:
                     probes[code] = None
-        _LOCATION_PROBE_CACHE.update({
-            "at": now,
-            "signature": signature,
-            "rows": [
-                {"country_code": code, "proxy_latency_ms": latency}
-                for code, latency in probes.items()
-            ],
-        })
 
-    ports = {int(PREFERRED_LOCAL_PORTS[x["country_code"]]) for x in rows}
-    connections = established_connections_by_port(ports)
     current_host = _gateway_host({"endpoint": _current_wireguard_endpoint()})
     gateway_latency = ping_latency_ms(current_host) if current_host else None
+    gateway_ok = gateway_tunnel_ok()
+    now_epoch = int(time.time())
+    result_rows: list[dict[str, Any]] = []
+
+    for row in rows:
+        code = str(row["country_code"])
+        prev = previous_rows.get(code) or {}
+        available_now = bool(row.get("available"))
+        latency = probes.get(code) if available_now else None
+        failures = int(prev.get("failures") or 0)
+        successes = int(prev.get("successes") or 0)
+        last_success = int(prev.get("last_success") or 0)
+        smoothed = prev.get("smoothed_latency_ms")
+
+        if not available_now:
+            state = "NO_UPSTREAM"
+            failures = 0
+            successes = 0
+            smoothed = None
+        elif latency is not None:
+            failures = 0
+            successes += 1
+            last_success = now_epoch
+            if smoothed is None:
+                smoothed = float(latency)
+            else:
+                smoothed = (0.65 * float(smoothed)) + (0.35 * float(latency))
+            state = (
+                "DEGRADED"
+                if float(smoothed) >= LOCATION_DEGRADED_LATENCY_MS
+                else "ONLINE"
+            )
+        else:
+            failures += 1
+            successes = 0
+            recently_good = bool(last_success and now_epoch - last_success <= 45)
+            state = (
+                "DEGRADED"
+                if failures < LOCATION_HEALTH_OFFLINE_AFTER and recently_good
+                else "OFFLINE"
+            )
+
+        proxy_latency = (
+            round(float(smoothed), 1)
+            if smoothed is not None and state in {"ONLINE", "DEGRADED"}
+            else None
+        )
+        total_latency = None
+        if gateway_latency is not None and proxy_latency is not None:
+            total_latency = round(float(gateway_latency) + proxy_latency, 1)
+
+        result_rows.append({
+            "country_code": code,
+            "state": state,
+            "available": available_now,
+            "gateway_port": int(row.get("port") or 0) if available_now else None,
+            "proxy_latency_ms": proxy_latency,
+            "probe_latency_ms": latency,
+            "total_latency_ms": total_latency,
+            "failures": failures,
+            "successes": successes,
+            "last_success": last_success or None,
+            "updated_at": now_epoch,
+        })
+
+    payload = {
+        "signature": signature,
+        "updated_at": now_epoch,
+        "gateway_reachable": bool(gateway_ok),
+        "gateway_latency_ms": gateway_latency,
+        "rows": result_rows,
+    }
+    save_json(LOCATION_HEALTH_FILE, payload)
+    return payload
+
+
+def _location_health_worker() -> None:
+    while True:
+        try:
+            state = load_json(STATE_FILE, {})
+            desired = state.get("desired") if isinstance(state.get("desired"), dict) else {}
+            if desired:
+                refresh_location_health_cache(desired)
+        except Exception:
+            pass
+        time.sleep(LOCATION_PROBE_INTERVAL)
+
+
+def location_runtime_rows(desired: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = locations_from_desired(desired)
+    signature = locations_signature(rows)
+    cache = load_json(LOCATION_HEALTH_FILE, {})
+    age = max(0, int(time.time()) - int(cache.get("updated_at") or 0))
+
+    if (
+        cache.get("signature") != signature
+        or not cache.get("rows")
+        or age > LOCATION_HEALTH_STALE_SECONDS
+    ):
+        try:
+            cache = refresh_location_health_cache(desired)
+        except Exception:
+            cache = {}
+
+    health_by_code = {
+        str(x.get("country_code") or ""): x
+        for x in (cache.get("rows") or [])
+        if isinstance(x, dict)
+    }
+    ports = {
+        int(PREFERRED_LOCAL_PORTS[x["country_code"]])
+        for x in rows
+        if x["country_code"] in PREFERRED_LOCAL_PORTS
+    }
+    connections = established_connections_by_port(ports)
     out = []
     for row in rows:
         code = str(row["country_code"])
         local_port = int(PREFERRED_LOCAL_PORTS[code])
-        proxy_latency = probes.get(code) if row.get("available") else None
-        total_latency = None
-        if gateway_latency is not None and proxy_latency is not None:
-            total_latency = round(float(gateway_latency) + float(proxy_latency), 1)
+        health = health_by_code.get(code) or {}
+        state = str(
+            health.get("state")
+            or ("NO_UPSTREAM" if not row.get("available") else "CHECKING")
+        )
         out.append({
             "country_code": code,
             "label": f"{row.get('flag','')} {row.get('name','')} — {row.get('city','')}".strip(),
             "local_port": local_port,
-            "gateway_port": int(row.get("port") or 0) if row.get("available") else None,
+            "gateway_port": (
+                int(row.get("port") or 0)
+                if row.get("available")
+                else None
+            ),
             "available": bool(row.get("available")),
+            "state": state,
             "connections": int(connections.get(local_port, 0)),
-            "proxy_latency_ms": proxy_latency,
-            "total_latency_ms": total_latency,
+            "proxy_latency_ms": health.get("proxy_latency_ms"),
+            "total_latency_ms": health.get("total_latency_ms"),
+            "failures": int(health.get("failures") or 0),
+            "last_success": health.get("last_success"),
+            "updated_at": health.get("updated_at") or cache.get("updated_at"),
         })
     return out
 
@@ -1691,6 +1834,11 @@ def process_one_command(client: CentralClient) -> bool:
 def agent_loop() -> None:
     cfg = AgentConfig.load()
     client = CentralClient(cfg)
+    threading.Thread(
+        target=_location_health_worker,
+        name="ganj-location-health",
+        daemon=True,
+    ).start()
     failures = 0
     last_wg_repair = 0.0
     while True:
