@@ -1030,6 +1030,7 @@ class PasarGuardAdapter:
             inbound = copy.deepcopy(template)
             inbound["tag"] = in_tag
             inbound["port"] = local_port
+            public_sni = _apply_pasarguard_shared_sni(inbound, local_port)
             inbounds.append(inbound)
 
             outbounds.append(_gateway_outbound(loc, out_tag))
@@ -1042,6 +1043,8 @@ class PasarGuardAdapter:
                 "country_code": code,
                 "inbound_tag": in_tag,
                 "local_port": local_port,
+                "public_port": GANJ_SHARED_PUBLIC_PORT if public_sni else local_port,
+                "public_sni": public_sni,
                 "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "available": bool(loc.get("available")),
             })
@@ -1070,6 +1073,7 @@ class PasarGuardAdapter:
                         item["inbound_tag"],
                         int(item["local_port"]),
                         _display_label(loc),
+                        public_sni=item.get("public_sni"),
                     )
                     self.create_host(h)
 
@@ -1083,13 +1087,29 @@ class PasarGuardAdapter:
                 raise RuntimeError("pasarguard_post_install_core_verification_failed")
 
             if template_host:
-                verify_hosts = {
-                    str(x.get("inbound_tag") or "")
+                verify_host_rows = {
+                    str(x.get("inbound_tag") or ""): x
                     for x in self.get_hosts()
                     if _is_ganj_pasarguard_owned_tag(str(x.get("inbound_tag") or ""))
                 }
-                if not managed_tags.issubset(verify_hosts):
+                if not managed_tags.issubset(set(verify_host_rows)):
                     raise RuntimeError("pasarguard_post_install_host_verification_failed")
+                for item in created:
+                    row = verify_host_rows.get(str(item["inbound_tag"])) or {}
+                    expected_port = int(item.get("public_port") or item["local_port"])
+                    if int(row.get("port") or 0) != expected_port:
+                        raise RuntimeError(
+                            "pasarguard_post_install_public_port_verification_failed:"
+                            + str(item["inbound_tag"])
+                        )
+                    expected_sni = str(item.get("public_sni") or "")
+                    if expected_sni and expected_sni not in {
+                        str(x) for x in (row.get("sni") or [])
+                    }:
+                        raise RuntimeError(
+                            "pasarguard_post_install_public_sni_verification_failed:"
+                            + str(item["inbound_tag"])
+                        )
 
             group_sync = self.sync_template_groups(
                 managed_tags,
