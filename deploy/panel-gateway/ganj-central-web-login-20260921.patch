@@ -1,0 +1,399 @@
+--- a/app/db.py
++++ b/app/db.py
+@@ -119,6 +119,8 @@
+     license_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+     traffic_used_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+     replacement_for_node_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    web_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
++    web_password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+ 
+ class GanjManagedNode(Base):
+@@ -137,6 +139,8 @@
+     wg_public_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+     wg_address: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+     secret_hash: Mapped[str] = mapped_column(String(64), index=True)
++    web_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
++    web_password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+     license_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+     traffic_limit_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+     rx_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+@@ -238,7 +242,11 @@
+             "ALTER TABLE ganj_enrollment_tokens ADD COLUMN IF NOT EXISTS license_expires_at TIMESTAMP",
+             "ALTER TABLE ganj_enrollment_tokens ADD COLUMN IF NOT EXISTS traffic_used_bytes BIGINT DEFAULT 0",
+             "ALTER TABLE ganj_enrollment_tokens ADD COLUMN IF NOT EXISTS replacement_for_node_id VARCHAR(36)",
++            "ALTER TABLE ganj_enrollment_tokens ADD COLUMN IF NOT EXISTS web_username VARCHAR(64)",
++            "ALTER TABLE ganj_enrollment_tokens ADD COLUMN IF NOT EXISTS web_password_hash TEXT",
+             "ALTER TABLE ganj_managed_nodes ADD COLUMN IF NOT EXISTS representative_id VARCHAR(36)",
++            "ALTER TABLE ganj_managed_nodes ADD COLUMN IF NOT EXISTS web_username VARCHAR(64)",
++            "ALTER TABLE ganj_managed_nodes ADD COLUMN IF NOT EXISTS web_password_hash TEXT",
+             "ALTER TABLE ganj_managed_nodes ADD COLUMN IF NOT EXISTS bound_ip VARCHAR(64)",
+         ]:
+             conn.execute(text(ddl))
+--- a/app/ganj_nodes.py
++++ b/app/ganj_nodes.py
+@@ -9,6 +9,7 @@
+ from datetime import datetime, timedelta
+ 
+ from fastapi import APIRouter, Header, HTTPException, Request
++from argon2 import PasswordHasher
+ from pydantic import BaseModel, Field
+ from sqlalchemy import select, text, update
+ 
+@@ -22,12 +23,27 @@
+ WG_ENDPOINT = os.environ.get('GANJ_WG_ENDPOINT', 'turkey.ufo-tuning.ir:51820')
+ WG_SERVER_PUBLIC_KEY = os.environ.get('GANJ_WG_PUBLIC_KEY', '')
+ NODE_NET = ipaddress.ip_network(os.environ.get('GANJ_NODE_NET', '10.60.100.0/22'))
++WEB_PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
+ 
+ 
+ def sha256_text(value: str) -> str:
+     return hashlib.sha256(value.encode()).hexdigest()
+ 
+ 
++def hash_web_password(value: str) -> str:
++    value = str(value or "")
++    if len(value) < 10 or len(value) > 512:
++        raise HTTPException(400, 'web password must be 10..512 characters')
++    return WEB_PASSWORD_HASHER.hash(value)
++
++
++def web_login_payload(username, password_hash) -> dict:
++    return {
++        'username': str(username or ''),
++        'configured': bool(username and password_hash),
++    }
++
++
+ def configured_gateways() -> list[dict]:
+     raw = os.environ.get('GANJ_GATEWAYS_JSON', '').strip()
+     rows = []
+@@ -174,6 +190,13 @@
+     ttl_minutes: int = Field(default=30, ge=5, le=1440)
+     license_days: int = Field(default=30, ge=0, le=3650)
+     traffic_limit_gb: float | None = Field(default=None, ge=0.1, le=1000000)
++    web_username: str | None = Field(default=None, min_length=3, max_length=64)
++    web_password: str | None = Field(default=None, min_length=10, max_length=512)
++
++
++class WebLoginUpdateRequest(BaseModel):
++    username: str = Field(min_length=3, max_length=64)
++    password: str = Field(min_length=10, max_length=512)
+ 
+ 
+ class DesiredLocationRequest(BaseModel):
+@@ -198,6 +221,7 @@
+     'sync', 'panel_status', 'locations_install', 'locations_remove',
+     'diagnostics', 'wg_restart',
+     'gateway_status', 'gateway_switch', 'reconcile', 'live_status',
++    'web_credentials_set',
+ }
+ 
+ 
+@@ -248,6 +272,8 @@
+             node.os_info = body.os[:255] or None
+             node.wg_public_key = wg_key
+             node.secret_hash = sha256_text(node_secret)
++            node.web_username = token.web_username
++            node.web_password_hash = token.web_password_hash
+             node.representative_id = token.representative_id or node.representative_id or str(uuid.uuid4())
+             node.bound_ip = client_ip
+             node.license_expires_at = token.license_expires_at or ((now + timedelta(days=int(token.license_days))) if int(token.license_days or 0) > 0 else None)
+@@ -279,6 +305,8 @@
+                 wg_public_key=wg_key,
+                 wg_address=alloc_node_ip(db),
+                 secret_hash=sha256_text(node_secret),
++                web_username=token.web_username,
++                web_password_hash=token.web_password_hash,
+                 license_expires_at=token.license_expires_at or ((now + timedelta(days=int(token.license_days))) if int(token.license_days or 0) > 0 else None),
+                 traffic_limit_bytes=token.traffic_limit_bytes,
+                 rx_bytes=int(token.traffic_used_bytes or 0),
+@@ -298,6 +326,17 @@
+         token.bound_ip = client_ip
+         token.bound_fingerprint = body.fingerprint[:128]
+         token.bound_wg_public_key = wg_key
++        if node.web_username and node.web_password_hash:
++            db.add(GanjNodeCommand(
++                node_id=node.id,
++                action='web_credentials_set',
++                payload_json=safe_json({
++                    'username': node.web_username,
++                    'password_hash': node.web_password_hash,
++                }),
++                status='queued',
++                created_at=now,
++            ))
+         db.commit()
+         return {
+             'node_id': node.id,
+@@ -467,6 +506,11 @@
+ def create_enrollment_token(body: TokenRequest):
+     raw = 'gvps_' + secrets.token_urlsafe(28)
+     now = utcnow()
++    username = str(body.web_username or '').strip() or None
++    password = str(body.web_password or '')
++    if bool(username) != bool(password):
++        raise HTTPException(400, 'web username and password must be provided together')
++    password_hash = hash_web_password(password) if password else None
+     with SessionLocal() as db:
+         traffic_limit = int(float(body.traffic_limit_gb) * 1024 * 1024 * 1024) if body.traffic_limit_gb is not None else None
+         row = GanjEnrollmentToken(
+@@ -474,6 +518,8 @@
+             representative_id=str(uuid.uuid4()),
+             license_days=int(body.license_days), traffic_limit_bytes=traffic_limit,
+             traffic_used_bytes=0,
++            web_username=username,
++            web_password_hash=password_hash,
+             expires_at=now + timedelta(minutes=body.ttl_minutes), created_at=now,
+         )
+         db.add(row)
+@@ -484,6 +530,7 @@
+             'issued_at': row.created_at, 'expires_at': row.expires_at,
+             'label': row.label, 'license_days': row.license_days,
+             'traffic_limit_bytes': row.traffic_limit_bytes,
++            'web_login': web_login_payload(row.web_username, row.web_password_hash),
+         }
+ 
+ 
+@@ -529,6 +576,7 @@
+         'applied_location': node.applied_location,
+         'desired_revision': node.desired_revision,
+         'last_error': node.last_error, 'runtime': _runtime_payload(node),
++        'web_login': web_login_payload(node.web_username, node.web_password_hash),
+         'created_at': node.created_at,
+         'token': ({
+             'id': token.id, 'status': _token_status(token, now),
+@@ -561,6 +609,7 @@
+             'license_days': t.license_days,
+             'traffic_limit_bytes': t.traffic_limit_bytes,
+             'traffic_used_bytes': int(t.traffic_used_bytes or 0),
++            'web_login': web_login_payload(t.web_username, t.web_password_hash),
+         } for t in rows]}
+ 
+ 
+@@ -616,7 +665,9 @@
+                     },
+                     'last_seen_at': None, 'desired_location': None,
+                     'applied_location': None, 'desired_revision': None,
+-                    'last_error': None, 'runtime': {}, 'created_at': latest_token.created_at,
++                    'last_error': None, 'runtime': {},
++                    'web_login': web_login_payload(latest_token.web_username, latest_token.web_password_hash),
++                    'created_at': latest_token.created_at,
+                     'token': {
+                         'id': latest_token.id, 'status': _token_status(latest_token, now),
+                         'issued_at': latest_token.created_at, 'expires_at': latest_token.expires_at,
+@@ -644,7 +695,9 @@
+                     },
+                     'last_seen_at': None, 'desired_location': None,
+                     'applied_location': None, 'desired_revision': None,
+-                    'last_error': None, 'runtime': {}, 'created_at': latest_token.created_at,
++                    'last_error': None, 'runtime': {},
++                    'web_login': web_login_payload(latest_token.web_username, latest_token.web_password_hash),
++                    'created_at': latest_token.created_at,
+                     'token': {
+                         'id': latest_token.id, 'status': _token_status(latest_token, now),
+                         'issued_at': latest_token.created_at, 'expires_at': latest_token.expires_at,
+@@ -739,6 +792,8 @@
+             traffic_limit_bytes=node.traffic_limit_bytes,
+             traffic_used_bytes=used,
+             replacement_for_node_id=node.id,
++            web_username=node.web_username or (old_token.web_username if old_token else None),
++            web_password_hash=node.web_password_hash or (old_token.web_password_hash if old_token else None),
+             expires_at=now + timedelta(minutes=int(body.ttl_minutes)),
+             created_at=now,
+         )
+@@ -755,6 +810,76 @@
+         }
+ 
+ 
++@admin_router.post('/representatives/{representative_id}/web-login')
++def update_representative_web_login(representative_id: str, body: WebLoginUpdateRequest):
++    username = body.username.strip()
++    password_hash = hash_web_password(body.password)
++    now = utcnow()
++    with SessionLocal() as db:
++        token = db.scalar(
++            select(GanjEnrollmentToken)
++            .where(GanjEnrollmentToken.representative_id == representative_id)
++            .order_by(GanjEnrollmentToken.created_at.desc())
++            .with_for_update()
++        )
++        node = db.scalar(
++            select(GanjManagedNode)
++            .where(
++                GanjManagedNode.representative_id == representative_id,
++                GanjManagedNode.revoked_at.is_(None),
++            )
++            .order_by(GanjManagedNode.created_at.desc())
++            .with_for_update()
++        )
++        if token is None and node is None:
++            raise HTTPException(404, 'representative not found')
++
++        if token is not None:
++            token.web_username = username
++            token.web_password_hash = password_hash
++        command_id = None
++        if node is not None:
++            node.web_username = username
++            node.web_password_hash = password_hash
++            node.updated_at = now
++            queued = db.scalar(
++                select(GanjNodeCommand)
++                .where(
++                    GanjNodeCommand.node_id == node.id,
++                    GanjNodeCommand.action == 'web_credentials_set',
++                    GanjNodeCommand.status == 'queued',
++                )
++                .order_by(GanjNodeCommand.id.desc())
++                .with_for_update()
++            )
++            payload = safe_json({
++                'username': username,
++                'password_hash': password_hash,
++            })
++            if queued is not None:
++                queued.payload_json = payload
++                command_id = queued.id
++            else:
++                cmd = GanjNodeCommand(
++                    node_id=node.id,
++                    action='web_credentials_set',
++                    payload_json=payload,
++                    status='queued',
++                    created_at=now,
++                )
++                db.add(cmd)
++                db.flush()
++                command_id = cmd.id
++        db.commit()
++        return {
++            'ok': True,
++            'representative_id': representative_id,
++            'web_login': {'username': username, 'configured': True},
++            'command_id': command_id,
++            'delivery': 'queued' if command_id else 'on_enrollment',
++        }
++
++
+ @admin_router.post('/nodes/{node_id}/location')
+ def set_desired_location(node_id: str, body: DesiredLocationRequest):
+     code = body.country_code.upper() if body.country_code else None
+--- a/var/www/panel/index.html
++++ b/var/www/panel/index.html
+@@ -177,6 +177,8 @@
+     <div class="field"><label>اعتبار توکن نصب</label><select id="ganjTokenTtl"><option value="15">15 دقیقه</option><option value="30" selected>30 دقیقه</option><option value="60">1 ساعت</option><option value="360">6 ساعت</option></select></div>
+     <div class="field"><label>مدت لایسنس (روز، 0 = نامحدود)</label><input id="ganjLicenseDays" type="number" min="0" max="3650" value="30"></div>
+     <div class="field"><label>سقف ترافیک GB (خالی = نامحدود)</label><input id="ganjTrafficLimit" type="number" min="0.1" step="0.1" placeholder="نامحدود"></div>
++    <div class="field"><label>نام کاربری پنل وب</label><input id="ganjWebUsername" autocomplete="off" placeholder="مثلاً armin"></div>
++    <div class="field"><label>رمز پنل وب</label><input id="ganjWebPassword" type="password" autocomplete="new-password" minlength="10" placeholder="حداقل ۱۰ کاراکتر"></div>
+     <div class="span2"><button class="btn primary" style="width:100%" onclick="createGanjToken()">ساخت نماینده و صدور توکن</button></div>
+    </div>
+    <div id="ganjTokenBox" style="display:none;margin-top:12px;padding:12px;border:1px solid #314155;border-radius:11px;background:#0d131a">
+@@ -196,7 +198,7 @@
+  </div>
+  <div class="card" style="margin-top:14px">
+   <div class="card-title"><h2>نمایندگان</h2><span id="ganjNodeCount">0 نماینده</span></div>
+-  <div class="table-wrap"><table class="table" style="min-width:1250px"><thead><tr><th>نماینده</th><th>وضعیت پنل</th><th>توکن / انقضا</th><th>وضعیت</th><th>لایسنس / انقضا</th><th>مصرف / سقف</th><th>WG</th><th>Desired</th><th>Applied</th><th>آخرین ارتباط</th><th>عملیات</th></tr></thead><tbody id="ganjNodeRows"></tbody></table></div>
++  <div class="table-wrap"><table class="table" style="min-width:1250px"><thead><tr><th>نماینده</th><th>وضعیت پنل</th><th>ورود وب</th><th>توکن / انقضا</th><th>وضعیت</th><th>لایسنس / انقضا</th><th>مصرف / سقف</th><th>WG</th><th>Desired</th><th>Applied</th><th>آخرین ارتباط</th><th>عملیات</th></tr></thead><tbody id="ganjNodeRows"></tbody></table></div>
+  </div>
+ </section>
+ 
+@@ -264,6 +266,7 @@
+ </section>
+ 
+ <div class="modal" id="dialogsModal"><div class="modal-box"><div class="modal-head"><div><b>انتخاب سورس</b><div class="top-sub">کانال یا گروه موردنظر را به Collector اضافه کن</div></div><button class="btn small" onclick="closeModal()">بستن</button></div><div class="dialog-list" id="dialogList"></div></div></div>
++<div class="modal" id="ganjWebLoginModal"><div class="modal-box"><div class="modal-head"><div><b>ورود پنل وب نماینده</b><div class="top-sub">رمز فقط برای همین درخواست استفاده و به Argon2id تبدیل می‌شود</div></div><button class="btn small" onclick="closeGanjWebLoginModal()">بستن</button></div><div class="grid" style="margin-top:14px"><div class="field span2"><label>نام کاربری</label><input id="ganjWebLoginUser" autocomplete="off" placeholder="representative"></div><div class="field span2"><label>رمز جدید</label><input id="ganjWebLoginPass" type="password" autocomplete="new-password" minlength="10" placeholder="حداقل ۱۰ کاراکتر"></div><div class="span2"><button class="btn primary" style="width:100%" onclick="saveGanjWebLogin()">ذخیره و ارسال به Node</button></div></div></div></div>
+ <div class="toast" id="toast"></div>
+ </main>
+ </section>
+@@ -522,7 +525,7 @@
+     poolRoot.appendChild(tr);
+    }
+   }
+-  if(locRoot&&!d.items.length)locRoot.innerHTML='<tr><td colspan="11"><div class="empty">لوکیشنی ثبت نشده</div></td></tr>';
++  if(locRoot&&!d.items.length)locRoot.innerHTML='<tr><td colspan="12"><div class="empty">لوکیشنی ثبت نشده</div></td></tr>';
+   if(poolRoot&&!d.items.length)poolRoot.innerHTML='<tr><td colspan="11"><div class="empty">Pool ثبت نشده</div></td></tr>';
+  }catch(e){toast(e.message,true)}
+ }
+@@ -601,12 +604,16 @@
+    const licReasonMap={expired:'منقضی',quota_exceeded:'اتمام حجم',revoked:'لغوشده',pending_enrollment:'منتظر فعال‌سازی'};
+    const licCls=lic.active?'good':(pending?'warn':'bad');
+    const licText=lic.active?('اشتراک فعال · '+lexp):(pending?('اشتراک محفوظ · '+(lexp==='∞'?((tok.license_days??lic.license_days??0)+' روز پس از فعال‌سازی'):lexp)):esc(licReasonMap[lic.reason]||lic.reason||'غیرفعال'));
+-   const repId=esc(n.representative_id||nodeId||'');
++   const repRaw=String(n.representative_id||nodeId||'');
++   const repId=esc(repRaw);
++   const web=n.web_login||{};
++   const webLogin='<span class="tag '+(web.configured?'good':'warn')+'">'+(web.configured?'فعال':'تنظیم نشده')+'</span><br><small style="color:var(--muted)">'+esc(web.username||'—')+'</small><br><button class="btn small node-web-login">'+(web.configured?'تغییر ورود':'تنظیم ورود')+'</button>';
+    const actions=nodeId?'<div class="actions"><button class="btn small node-apply">Location</button><button class="btn small node-install">Install</button><button class="btn small node-diag">Diag</button><button class="btn small node-wg">WG</button><button class="btn small node-renew">تمدید</button><button class="btn small node-rotate">تعویض سرور/IP</button><button class="btn small danger node-revoke">لغو دسترسی</button></div>':(tok.id&&tok.status==='pending'?'<div class="actions"><span class="tag warn">منتظر نصب Agent</span><button class="btn small danger token-revoke">لغو توکن</button></div>':'<span class="tag bad">'+esc(tokText)+'</span>');
+    const desired=nodeId?'<select class="input" id="nodeLoc-'+esc(nodeId)+'">'+opts+'</select>':'—';
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td><b>'+esc(n.name||n.hostname||'نماینده')+'</b><br><small style="color:var(--muted)">'+repId.slice(0,18)+(n.agent_version?' · v'+esc(n.agent_version):'')+'</small></td>'
+     +'<td>'+panelLive+'<br><small style="color:var(--muted)">'+esc(n.panel_name||n.panel_type||'—')+'</small> '+serviceLive+'<br><small style="color:var(--muted)">IP قفل‌شده: <code>'+esc(n.bound_ip||tok.bound_ip||'—')+'</code></small></td>'
++    +'<td>'+webLogin+'</td>'
+     +'<td><span class="tag '+tokCls+'">'+esc(tokText)+'</span><br><small style="color:var(--muted)">انقضای توکن: '+esc(tokExp)+'</small><br><small style="color:var(--muted)">Token #'+esc(tok.id||'—')+'</small></td>'
+     +'<td><span class="tag '+cls+'">'+esc(n.status||'—')+'</span>'+(n.last_error?'<br><small class="err">'+esc(n.last_error)+'</small>':'')+'</td>'
+     +'<td><span class="tag '+licCls+'">'+licText+'</span></td>'
+@@ -614,6 +621,8 @@
+     +'<td><code>'+esc(n.wg_address||'—')+'</code><br>'+wgLive+' '+gwLive+'</td>'
+     +'<td>'+desired+'</td><td>'+esc(n.applied_location||'—')+'</td><td>'+esc(seen)+'</td><td>'+actions+'</td>';
+    root.appendChild(tr);
++   const webBtn=tr.querySelector('.node-web-login');
++   if(webBtn)webBtn.onclick=()=>setGanjWebLogin(repRaw,web.username||'');
+    if(nodeId){
+     tr.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(nodeId);
+     tr.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(nodeId,'locations_install');
+@@ -634,7 +643,11 @@
+   const ttl=Number(document.getElementById('ganjTokenTtl').value||30);
+   const license_days=Number(document.getElementById('ganjLicenseDays').value||0);
+   const tv=document.getElementById('ganjTrafficLimit').value.trim(); const traffic_limit_gb=tv?Number(tv):null;
+-  const d=await req('/admin/ganj/enrollment-token',{method:'POST',body:JSON.stringify({label,ttl_minutes:ttl,license_days,traffic_limit_gb})});
++  const web_username=document.getElementById('ganjWebUsername').value.trim()||null;
++  const web_password=document.getElementById('ganjWebPassword').value;
++  if((web_username&&!web_password)||(!web_username&&web_password)){toast('نام کاربری و رمز پنل وب را باهم وارد کنید',true);return;}
++  if(web_password&&web_password.length<10){toast('رمز پنل وب حداقل ۱۰ کاراکتر باشد',true);return;}
++  const d=await req('/admin/ganj/enrollment-token',{method:'POST',body:JSON.stringify({label,ttl_minutes:ttl,license_days,traffic_limit_gb,web_username,web_password:web_password||null})});
+   document.getElementById('ganjTokenValue').textContent=d.token;
+   document.getElementById('ganjTokenBox').style.display='block';
+   toast('نماینده ساخته شد و توکن یک‌بارمصرف صادر شد');
+@@ -642,6 +655,32 @@
+  }catch(e){toast(e.message,true)}
+ }
+ async function copyGanjToken(){const v=document.getElementById('ganjTokenValue').textContent;try{await navigator.clipboard.writeText(v);toast('کپی شد')}catch{toast('کپی ناموفق',true)}}
++let GANJ_WEB_LOGIN_REP=null;
++function setGanjWebLogin(repId,currentUser){
++ GANJ_WEB_LOGIN_REP=repId;
++ document.getElementById('ganjWebLoginUser').value=currentUser||'representative';
++ document.getElementById('ganjWebLoginPass').value='';
++ document.getElementById('ganjWebLoginModal').classList.add('open');
++ setTimeout(()=>document.getElementById('ganjWebLoginPass').focus(),50);
++}
++function closeGanjWebLoginModal(){
++ document.getElementById('ganjWebLoginPass').value='';
++ GANJ_WEB_LOGIN_REP=null;
++ document.getElementById('ganjWebLoginModal').classList.remove('open');
++}
++async function saveGanjWebLogin(){
++ const repId=GANJ_WEB_LOGIN_REP; if(!repId)return;
++ const clean=document.getElementById('ganjWebLoginUser').value.trim();
++ const password=document.getElementById('ganjWebLoginPass').value;
++ if(clean.length<3){toast('نام کاربری حداقل ۳ کاراکتر باشد',true);return;}
++ if(password.length<10){toast('رمز پنل وب حداقل ۱۰ کاراکتر باشد',true);return;}
++ try{
++  const d=await req('/admin/ganj/representatives/'+encodeURIComponent(repId)+'/web-login',{method:'POST',body:JSON.stringify({username:clean,password})});
++  closeGanjWebLoginModal();
++  toast(d.command_id?'تغییر ورود برای Node ارسال شد':'ورود ذخیره شد و هنگام نصب اعمال می‌شود');
++  await loadGanjNodes();
++ }catch(e){toast(e.message,true)}
++}
+ async function setGanjNodeLocation(id){
+  try{const v=document.getElementById('nodeLoc-'+id).value||null;await req('/admin/ganj/nodes/'+id+'/location',{method:'POST',body:JSON.stringify({country_code:v})});toast('Desired state بروزرسانی شد');await loadGanjNodes()}catch(e){toast(e.message,true)}
+ }
+@@ -678,6 +717,7 @@
+ }
+ async function refreshAll(){await Promise.all([loadOverview(),loadSummary()])}
+ document.getElementById('dialogsModal').addEventListener('click',e=>{if(e.target.id==='dialogsModal')closeModal()});
++document.getElementById('ganjWebLoginModal').addEventListener('click',e=>{if(e.target.id==='ganjWebLoginModal')closeGanjWebLoginModal()});
+ const initial=localStorage.getItem('panel-page')||'dashboard';showPage(PAGE_META[initial]?initial:'dashboard');refreshAll();pollLive();
+ setInterval(pollLive,2000);
+ setInterval(()=>{if(!document.hidden){

@@ -34,7 +34,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 
 INSTALL_DIR = Path(__file__).resolve().parent
 ETC_DIR = Path("/etc/ganj-vps")
@@ -49,6 +49,7 @@ PANEL_SECRET_FILE = ETC_DIR / "panel.json"
 STATE_FILE = STATE_DIR / "state.json"
 GATEWAYS_FILE = ETC_DIR / "gateways.json"
 LOCATION_HEALTH_FILE = STATE_DIR / "location-health.json"
+WEB_AUTH_FILE = ETC_DIR / "web-auth.json"
 
 DEFAULT_CENTRAL = "https://turkey.ufo-tuning.ir/ganj-agent"
 HEARTBEAT_INTERVAL = 15
@@ -1817,6 +1818,35 @@ def execute_central_command(action: str, payload: dict[str, Any] | None = None) 
         if payload.get("locations", True) and desired:
             data["locations"] = location_runtime_rows(desired)
         return data
+    if action == "web_credentials_set":
+        username = str(payload.get("username") or "").strip()
+        password_hash = str(payload.get("password_hash") or "").strip()
+        if not (3 <= len(username) <= 64):
+            raise RuntimeError("invalid_web_username")
+        if not (
+            password_hash.startswith("$argon2id$")
+            or password_hash.startswith("$argon2i$")
+            or password_hash.startswith("$argon2d$")
+        ):
+            raise RuntimeError("invalid_web_password_hash")
+        save_json(
+            WEB_AUTH_FILE,
+            {
+                "username": username,
+                "password_hash": password_hash,
+                "updated_at": int(time.time()),
+                "source": "central",
+            },
+            0o600,
+        )
+        subprocess.run(
+            ["systemctl", "restart", "ganj-vps-web.service"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        return {"username": username, "auth_configured": True}
     raise RuntimeError("unsupported_central_command")
 
 def process_one_command(client: CentralClient) -> bool:

@@ -336,6 +336,44 @@ class PasarGuardPublishingTests(unittest.TestCase):
         self.assertIn("defaults", cleaned)
 
 
+class CentralWebCredentialTests(unittest.TestCase):
+    def test_central_web_credentials_store_only_argon_hash(self):
+        old_save = ganj_vps.save_json
+        old_run = ganj_vps.subprocess.run
+        seen = {}
+        try:
+            ganj_vps.save_json = lambda path, payload, mode=0o600: seen.update({
+                "path": path, "payload": payload, "mode": mode
+            })
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            ganj_vps.subprocess.run = lambda *args, **kwargs: Result()
+            result = ganj_vps.execute_central_command(
+                "web_credentials_set",
+                {
+                    "username": "representative",
+                    "password_hash": "$argon2id$v=19$m=65536,t=3,p=2$abc$def",
+                },
+            )
+            self.assertTrue(result["auth_configured"])
+            self.assertEqual(seen["payload"]["username"], "representative")
+            self.assertTrue(seen["payload"]["password_hash"].startswith("$argon2id$"))
+            self.assertNotIn("password", result)
+            self.assertEqual(seen["mode"], 0o600)
+        finally:
+            ganj_vps.save_json = old_save
+            ganj_vps.subprocess.run = old_run
+
+    def test_central_web_credentials_reject_plaintext(self):
+        with self.assertRaisesRegex(RuntimeError, "invalid_web_password_hash"):
+            ganj_vps.execute_central_command(
+                "web_credentials_set",
+                {"username": "representative", "password_hash": "plaintext-secret"},
+            )
+
+
 class InstallerUXTests(unittest.TestCase):
     def test_installer_hides_central_url_and_curl_progress(self):
         installer = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
