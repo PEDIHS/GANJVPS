@@ -299,7 +299,15 @@
   </div>
  </section>
  
-@@ -522,7 +524,7 @@
+@@ -264,6 +266,7 @@
+ </section>
+ 
+ <div class="modal" id="dialogsModal"><div class="modal-box"><div class="modal-head"><div><b>انتخاب سورس</b><div class="top-sub">کانال یا گروه موردنظر را به Collector اضافه کن</div></div><button class="btn small" onclick="closeModal()">بستن</button></div><div class="dialog-list" id="dialogList"></div></div></div>
++<div class="modal" id="ganjWebLoginModal"><div class="modal-box"><div class="modal-head"><div><b>ورود پنل وب نماینده</b><div class="top-sub">رمز فقط برای همین درخواست استفاده و به Argon2id تبدیل می‌شود</div></div><button class="btn small" onclick="closeGanjWebLoginModal()">بستن</button></div><div class="grid" style="margin-top:14px"><div class="field span2"><label>نام کاربری</label><input id="ganjWebLoginUser" autocomplete="off" placeholder="representative"></div><div class="field span2"><label>رمز جدید</label><input id="ganjWebLoginPass" type="password" autocomplete="new-password" minlength="10" placeholder="حداقل ۱۰ کاراکتر"></div><div class="span2"><button class="btn primary" style="width:100%" onclick="saveGanjWebLogin()">ذخیره و ارسال به Node</button></div></div></div></div>
+ <div class="toast" id="toast"></div>
+ </main>
+ </section>
+@@ -522,7 +525,7 @@
      poolRoot.appendChild(tr);
     }
    }
@@ -308,7 +316,7 @@
    if(poolRoot&&!d.items.length)poolRoot.innerHTML='<tr><td colspan="11"><div class="empty">Pool ثبت نشده</div></td></tr>';
   }catch(e){toast(e.message,true)}
  }
-@@ -601,12 +603,16 @@
+@@ -601,12 +604,16 @@
     const licReasonMap={expired:'منقضی',quota_exceeded:'اتمام حجم',revoked:'لغوشده',pending_enrollment:'منتظر فعال‌سازی'};
     const licCls=lic.active?'good':(pending?'warn':'bad');
     const licText=lic.active?('اشتراک فعال · '+lexp):(pending?('اشتراک محفوظ · '+(lexp==='∞'?((tok.license_days??lic.license_days??0)+' روز پس از فعال‌سازی'):lexp)):esc(licReasonMap[lic.reason]||lic.reason||'غیرفعال'));
@@ -326,7 +334,7 @@
      +'<td><span class="tag '+tokCls+'">'+esc(tokText)+'</span><br><small style="color:var(--muted)">انقضای توکن: '+esc(tokExp)+'</small><br><small style="color:var(--muted)">Token #'+esc(tok.id||'—')+'</small></td>'
      +'<td><span class="tag '+cls+'">'+esc(n.status||'—')+'</span>'+(n.last_error?'<br><small class="err">'+esc(n.last_error)+'</small>':'')+'</td>'
      +'<td><span class="tag '+licCls+'">'+licText+'</span></td>'
-@@ -614,6 +620,8 @@
+@@ -614,6 +621,8 @@
      +'<td><code>'+esc(n.wg_address||'—')+'</code><br>'+wgLive+' '+gwLive+'</td>'
      +'<td>'+desired+'</td><td>'+esc(n.applied_location||'—')+'</td><td>'+esc(seen)+'</td><td>'+actions+'</td>';
     root.appendChild(tr);
@@ -335,7 +343,7 @@
     if(nodeId){
      tr.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(nodeId);
      tr.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(nodeId,'locations_install');
-@@ -634,7 +642,11 @@
+@@ -634,7 +643,11 @@
    const ttl=Number(document.getElementById('ganjTokenTtl').value||30);
    const license_days=Number(document.getElementById('ganjLicenseDays').value||0);
    const tv=document.getElementById('ganjTrafficLimit').value.trim(); const traffic_limit_gb=tv?Number(tv):null;
@@ -348,17 +356,32 @@
    document.getElementById('ganjTokenValue').textContent=d.token;
    document.getElementById('ganjTokenBox').style.display='block';
    toast('نماینده ساخته شد و توکن یک‌بارمصرف صادر شد');
-@@ -642,6 +654,17 @@
+@@ -642,6 +655,32 @@
   }catch(e){toast(e.message,true)}
  }
  async function copyGanjToken(){const v=document.getElementById('ganjTokenValue').textContent;try{await navigator.clipboard.writeText(v);toast('کپی شد')}catch{toast('کپی ناموفق',true)}}
-+async function setGanjWebLogin(repId,currentUser){
-+ const username=prompt('نام کاربری پنل وب',currentUser||'representative'); if(username===null)return;
-+ const clean=username.trim(); if(clean.length<3){toast('نام کاربری حداقل ۳ کاراکتر باشد',true);return;}
-+ const password=prompt('رمز جدید پنل وب (حداقل ۱۰ کاراکتر)'); if(password===null)return;
++let GANJ_WEB_LOGIN_REP=null;
++function setGanjWebLogin(repId,currentUser){
++ GANJ_WEB_LOGIN_REP=repId;
++ document.getElementById('ganjWebLoginUser').value=currentUser||'representative';
++ document.getElementById('ganjWebLoginPass').value='';
++ document.getElementById('ganjWebLoginModal').classList.add('open');
++ setTimeout(()=>document.getElementById('ganjWebLoginPass').focus(),50);
++}
++function closeGanjWebLoginModal(){
++ document.getElementById('ganjWebLoginPass').value='';
++ GANJ_WEB_LOGIN_REP=null;
++ document.getElementById('ganjWebLoginModal').classList.remove('open');
++}
++async function saveGanjWebLogin(){
++ const repId=GANJ_WEB_LOGIN_REP; if(!repId)return;
++ const clean=document.getElementById('ganjWebLoginUser').value.trim();
++ const password=document.getElementById('ganjWebLoginPass').value;
++ if(clean.length<3){toast('نام کاربری حداقل ۳ کاراکتر باشد',true);return;}
 + if(password.length<10){toast('رمز پنل وب حداقل ۱۰ کاراکتر باشد',true);return;}
 + try{
 +  const d=await req('/admin/ganj/representatives/'+encodeURIComponent(repId)+'/web-login',{method:'POST',body:JSON.stringify({username:clean,password})});
++  closeGanjWebLoginModal();
 +  toast(d.command_id?'تغییر ورود برای Node ارسال شد':'ورود ذخیره شد و هنگام نصب اعمال می‌شود');
 +  await loadGanjNodes();
 + }catch(e){toast(e.message,true)}
@@ -366,3 +389,11 @@
  async function setGanjNodeLocation(id){
   try{const v=document.getElementById('nodeLoc-'+id).value||null;await req('/admin/ganj/nodes/'+id+'/location',{method:'POST',body:JSON.stringify({country_code:v})});toast('Desired state بروزرسانی شد');await loadGanjNodes()}catch(e){toast(e.message,true)}
  }
+@@ -678,6 +717,7 @@
+ }
+ async function refreshAll(){await Promise.all([loadOverview(),loadSummary()])}
+ document.getElementById('dialogsModal').addEventListener('click',e=>{if(e.target.id==='dialogsModal')closeModal()});
++document.getElementById('ganjWebLoginModal').addEventListener('click',e=>{if(e.target.id==='ganjWebLoginModal')closeGanjWebLoginModal()});
+ const initial=localStorage.getItem('panel-page')||'dashboard';showPage(PAGE_META[initial]?initial:'dashboard');refreshAll();pollLive();
+ setInterval(pollLive,2000);
+ setInterval(()=>{if(!document.hidden){
