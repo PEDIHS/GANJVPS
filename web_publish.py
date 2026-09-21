@@ -301,6 +301,25 @@ def _build_pem(domain: str, cert_path: Path, key_path: Path) -> Path:
     return pem_path
 
 
+def _ensure_firewall() -> None:
+    if not shutil.which("ufw"):
+        return
+    status = _run(["ufw", "status"], check=False, timeout=8)
+    first = (status.stdout or "").splitlines()
+    active = bool(first and first[0].strip().lower() == "status: active")
+    if not active:
+        return
+    for port, comment in (
+        ("80/tcp", "GANJ Web ACME"),
+        ("443/tcp", "GANJ Web HTTPS"),
+    ):
+        _run(
+            ["ufw", "allow", port, "comment", comment],
+            check=False,
+            timeout=15,
+        )
+
+
 def _install_renew_hook() -> None:
     RENEW_HOOK.parent.mkdir(parents=True, exist_ok=True)
     RENEW_HOOK.write_text(
@@ -417,6 +436,7 @@ def configure(
     except socket.gaierror as exc:
         raise RuntimeError("web_domain_dns_not_resolved") from exc
 
+    _ensure_firewall()
     original_haproxy = HAPROXY_CFG.read_text(encoding="utf-8")
     try:
         if auto_cert:
