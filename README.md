@@ -207,3 +207,18 @@ The page also includes representative search and filters for online, offline,
 pending-enrollment and problem states. The create-representative form is split
 into identity/install, subscription and Web Panel credential groups and collapses
 cleanly to a single-column mobile layout.
+
+
+### PasarGuard template Group synchronization
+
+GANJ-managed PasarGuard inbounds now inherit the selected template inbound's
+Group memberships during every location install/rebuild. This is required by
+PasarGuard's user authorization and subscription synchronization model: cloning
+only the Core inbound and Host can leave valid-looking public ports that reject
+all client handshakes.
+
+The installer snapshots the template Groups before changes, adds every managed
+`ganj-XX` inbound tag to those same Groups through PasarGuard's official Group
+API, verifies the membership by read-back, and includes Group state in the
+existing transaction rollback path. Group updates trigger PasarGuard's native
+user synchronization automatically.
