@@ -34,7 +34,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5"
 
 INSTALL_DIR = Path(__file__).resolve().parent
 ETC_DIR = Path("/etc/ganj-vps")
@@ -1873,6 +1873,15 @@ def agent_loop() -> None:
     failures = 0
     last_wg_repair = 0.0
     while True:
+        # Control-plane commands are intentionally polled first and isolated
+        # from reconcile/WireGuard work. A local runtime fault must not block
+        # password resets, diagnostics, repair or other queued admin actions.
+        command_error = None
+        try:
+            process_one_command(client)
+        except Exception as exc:
+            command_error = type(exc).__name__
+
         try:
             now = time.monotonic()
             if now - last_wg_repair >= WIREGUARD_REPAIR_INTERVAL:
@@ -1888,16 +1897,21 @@ def agent_loop() -> None:
                 "desired": desired,
                 "last_reconcile_result": reconcile,
                 "last_error": None,
+                "last_command_error": command_error,
                 "failures": 0,
             })
             save_json(STATE_FILE, state)
-            process_one_command(client)
             maybe_auto_update()
             failures = 0
         except Exception as exc:
             failures += 1
             state = load_json(STATE_FILE, {})
-            state.update({"last_error": type(exc).__name__, "last_error_at": int(time.time()), "failures": failures})
+            state.update({
+                "last_error": type(exc).__name__,
+                "last_error_at": int(time.time()),
+                "last_command_error": command_error,
+                "failures": failures,
+            })
             save_json(STATE_FILE, state)
         time.sleep(HEARTBEAT_INTERVAL if failures < 3 else min(60, HEARTBEAT_INTERVAL * failures))
 
