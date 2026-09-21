@@ -214,20 +214,51 @@ def _is_ganj_pasarguard_owned_tag(value: str) -> bool:
     return code in LOCATION_CATALOG
 
 
+GANJ_SHARED_PUBLIC_PORT = 443
+
+
+def _pasarguard_shared_sni(local_port: int) -> str:
+    # The selected REALITY template targets www.aparat.com and its certificate
+    # covers *.aparat.com. A unique, certificate-valid SNI lets HAProxy
+    # demultiplex all GANJ locations on the single public HTTPS port.
+    return f"hs-{int(local_port)}.aparat.com"
+
+
+def _apply_pasarguard_shared_sni(
+    inbound: dict[str, Any],
+    local_port: int,
+) -> str | None:
+    stream = inbound.get("streamSettings") or {}
+    reality = stream.get("realitySettings")
+    if not isinstance(reality, dict):
+        return None
+    sni = _pasarguard_shared_sni(local_port)
+    names = [str(x) for x in (reality.get("serverNames") or []) if str(x)]
+    if sni not in names:
+        names.append(sni)
+    reality["serverNames"] = names
+    stream["realitySettings"] = reality
+    inbound["streamSettings"] = stream
+    return sni
+
+
 def _clone_pasarguard_host(
     template_host: dict[str, Any],
     inbound_tag: str,
     local_port: int,
     remark: str,
+    public_sni: str | None = None,
 ) -> dict[str, Any]:
-    # Clone the selected Host. Only database identity, generated
-    # inbound/port linkage and the user-facing location name change.
-    # Domain/address, SNI, path, security, transport, status, fingerprint
-    # and every other Host field stay equivalent to the selected template.
+    # Clone the selected Host. The generated inbound stays on its stable local
+    # port, while REALITY hosts are published on shared public :443 and use a
+    # unique certificate-valid SNI. Cached old clients remain supported by the
+    # legacy high-port HAProxy frontends.
     host = copy.deepcopy(template_host)
     host.pop("id", None)
     host["inbound_tag"] = str(inbound_tag)
-    host["port"] = int(local_port)
+    host["port"] = GANJ_SHARED_PUBLIC_PORT if public_sni else int(local_port)
+    if public_sni:
+        host["sni"] = [str(public_sni)]
     host["remark"] = str(remark)
     return host
 
