@@ -184,6 +184,22 @@ padding:14px;border-radius:15px;max-height:360px;overflow:auto;color:#b7d8ca;fon
           <div id="panelProfile"></div>
         </article>
         <article class="card span-12">
+          <div class="card-head"><h3>تنظیم PasarGuard</h3><span class="badge">Manual selection</span></div>
+          <p class="section-note">Core، Inbound و Host را مثل CLI دستی انتخاب کن. URL پاسارگارد همچنان خودکار و مخفی است.</p>
+          <div class="form-row" style="grid-template-columns:1fr 1fr 1fr auto">
+            <select id="coreSelect" class="field"><option value="">Core</option></select>
+            <select id="inboundSelect" class="field"><option value="">Inbound template</option></select>
+            <select id="hostSelect" class="field"><option value="">Host template</option></select>
+            <button id="saveTemplateBtn" class="btn primary">ذخیره Template</button>
+          </div>
+          <div style="height:12px"></div>
+          <div class="form-row">
+            <input id="panelUser" class="field" placeholder="Admin username">
+            <input id="panelPass" class="field" type="password" placeholder="Admin password">
+            <button id="savePanelCredsBtn" class="btn gold">Reconnect</button>
+          </div>
+        </article>
+        <article class="card span-12">
           <div class="card-head"><h3>Inboundهای پنل</h3><button class="btn primary" data-action="locations_install">Rebuild GANJ</button></div>
           <div class="table-wrap"><table><thead><tr><th>Tag</th><th>Protocol</th><th>Listen</th><th>Port</th></tr></thead><tbody id="inboundsTable"></tbody></table></div>
         </article>
@@ -271,7 +287,18 @@ function renderDashboard(d){
  $("#livePill").className="pill "+(d.gateway_reachable?"online":"");$("#livePill").textContent=d.gateway_reachable?"● Live":"● Gateway Offline";
 }
 function drawChart(){let c=$("#trafficChart"),ctx=c.getContext("2d"),r=c.getBoundingClientRect(),w=Math.max(300,Math.floor(r.width*devicePixelRatio)),h=Math.floor(110*devicePixelRatio);if(c.width!==w||c.height!==h){c.width=w;c.height=h}ctx.clearRect(0,0,w,h);let all=[...trafficHistory.rx,...trafficHistory.tx],max=Math.max(1,...all)*1.12;const line=(arr,color)=>{if(arr.length<2)return;ctx.beginPath();arr.forEach((v,i)=>{let x=i/(44)*w,y=h-(v/max*h*.85)-h*.05;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.strokeStyle=color;ctx.lineWidth=2*devicePixelRatio;ctx.stroke()};line(trafficHistory.rx,"#34d399");line(trafficHistory.tx,"#f5be40")}
-async function loadPanel(){try{let d=await api("/api/panel"),s=d.status||{},p=d.profile||{};$("#panelBadge").className="badge "+(s.ok?"on":"off");$("#panelBadge").textContent=s.ok?"ONLINE":"OFFLINE";$("#panelMetrics").innerHTML=[["Type",s.type||p.type],["Inbounds",s.inbounds],["GANJ Inbounds",s.managed_inbounds],["Hosts",s.hosts],["GANJ Hosts",s.managed_hosts]].map(x=>'<div class="metric-row"><span>'+x[0]+'</span><b>'+escapeHtml(x[1]??"—")+'</b></div>').join("");$("#panelProfile").innerHTML=[["Core",p.core_id],["Template Inbound",p.template_inbound_tag||p.template_inbound_id],["Template Host",p.template_host_id],["URL","Local / hidden"]].map(x=>'<div class="metric-row"><span>'+x[0]+'</span><b>'+escapeHtml(x[1]??"—")+'</b></div>').join("");$("#inboundsTable").innerHTML=(d.inbounds||[]).map(x=>'<tr><td>'+escapeHtml(x.tag||x.remark||x.id)+'</td><td>'+escapeHtml(x.protocol)+'</td><td class="ltr">'+escapeHtml(x.listen||"—")+'</td><td>'+escapeHtml(x.port||"—")+'</td></tr>').join("")}catch(e){toast(e.message,true)}}
+async function loadPanel(){try{
+ let d=await api("/api/panel"),s=d.status||{},p=d.profile||{};
+ $("#panelBadge").className="badge "+(s.ok?"on":"off");$("#panelBadge").textContent=s.ok?"ONLINE":"OFFLINE";
+ $("#panelMetrics").innerHTML=[["Type",s.type||p.type],["Inbounds",s.inbounds],["GANJ Inbounds",s.managed_inbounds],["Hosts",s.hosts],["GANJ Hosts",s.managed_hosts]].map(x=>'<div class="metric-row"><span>'+x[0]+'</span><b>'+escapeHtml(x[1]??"—")+'</b></div>').join("");
+ $("#panelProfile").innerHTML=[["Core",p.core_id],["Template Inbound",p.template_inbound_tag||p.template_inbound_id],["Template Host",p.template_host_id],["URL","Local / hidden"]].map(x=>'<div class="metric-row"><span>'+x[0]+'</span><b>'+escapeHtml(x[1]??"—")+'</b></div>').join("");
+ $("#inboundsTable").innerHTML=(d.inbounds||[]).map(x=>'<tr><td>'+escapeHtml(x.tag||x.remark||x.id)+'</td><td>'+escapeHtml(x.protocol)+'</td><td class="ltr">'+escapeHtml(x.listen||"—")+'</td><td>'+escapeHtml(x.port||"—")+'</td></tr>').join("");
+ let cores=d.cores||[],ins=d.inbounds||[],hosts=d.hosts||[];
+ $("#coreSelect").innerHTML='<option value="">Core</option>'+cores.map(x=>'<option value="'+escapeHtml(x.id)+'" '+(String(x.id)===String(p.core_id)?'selected':'')+'>'+escapeHtml((x.name||("Core "+x.id))+" · "+(x.type||""))+'</option>').join("");
+ $("#inboundSelect").innerHTML='<option value="">Inbound template</option>'+ins.filter(x=>!String(x.tag||"").startsWith("ganj-")).map(x=>'<option value="'+escapeHtml(x.tag||x.id)+'" '+(String(x.tag||x.id)===String(p.template_inbound_tag||p.template_inbound_id)?'selected':'')+'>'+escapeHtml(x.tag||x.remark||x.id)+'</option>').join("");
+ $("#hostSelect").innerHTML='<option value="">Host template</option>'+hosts.filter(x=>!String(x.inbound_tag||"").startsWith("ganj-")).map(x=>'<option value="'+escapeHtml(x.id)+'" '+(String(x.id)===String(p.template_host_id)?'selected':'')+'>'+escapeHtml((x.remark||("Host "+x.id))+" · "+(x.inbound_tag||""))+'</option>').join("");
+ $("#panelUser").value=p.username||"";
+}catch(e){toast(e.message,true)}}
 async function loadGateways(){try{let d=await api("/api/gateways");$("#gatewayCurrent").textContent=d.current||"—";$("#gatewayList").innerHTML=(d.items||[]).map(x=>'<div class="metric-row"><span>'+(x.endpoint===d.current?"★ ":"")+escapeHtml(x.name||x.id)+'</span><b class="ltr">'+escapeHtml(x.endpoint)+' · '+(x.latency_ms==null?"offline":Math.round(x.latency_ms)+"ms")+' <button class="btn gw-switch" data-id="'+escapeHtml(x.id)+'">Switch</button> <button class="btn danger gw-remove" data-id="'+escapeHtml(x.id)+'">×</button></b></div>').join("");$$(".gw-switch").forEach(b=>b.onclick=()=>runAction("gateway_switch",{target:b.dataset.id}));$$(".gw-remove").forEach(b=>b.onclick=()=>runAction("gateway_remove",{target:b.dataset.id}).then(loadGateways))}catch(e){toast(e.message,true)}}
 async function loadLogs(){try{$("#logs").textContent=(await api("/api/logs?lines=120")).lines||"—"}catch(e){$("#logs").textContent=e.message}}
 async function runAction(action,extra={}){try{toast("در حال اجرا: "+action);let d=await api("/api/action",{method:"POST",body:JSON.stringify({action,...extra})});toast("انجام شد: "+action);setTimeout(refreshOnce,800);return d}catch(e){toast(e.message,true);throw e}}
@@ -283,6 +310,13 @@ $("#refreshBtn").onclick=refreshOnce;$$("[data-page]").forEach(b=>b.onclick=()=>
 $("#removeLocationsBtn").onclick=()=>{if(confirm("فقط Locationهای مدیریت‌شده توسط GANJ حذف شوند؟"))runAction("locations_remove",{confirm:"REMOVE"})};
 $("#bestGatewayBtn").onclick=()=>runAction("gateway_switch",{target:"best"}).then(loadGateways);
 $("#addGatewayBtn").onclick=()=>runAction("gateway_add",{name:$("#gwName").value,endpoint:$("#gwEndpoint").value}).then(loadGateways);
+$("#saveTemplateBtn").onclick=async()=>{try{
+ let body={core_id:Number($("#coreSelect").value||0),template_inbound_tag:$("#inboundSelect").value,template_host_id:Number($("#hostSelect").value||0)};
+ await api("/api/panel/template",{method:"POST",body:JSON.stringify(body)});toast("Template ذخیره شد");await loadPanel();
+}catch(e){toast(e.message,true)}};
+$("#savePanelCredsBtn").onclick=async()=>{try{
+ await api("/api/panel/credentials",{method:"POST",body:JSON.stringify({username:$("#panelUser").value,password:$("#panelPass").value})});$("#panelPass").value="";toast("اتصال PasarGuard تأیید شد");await loadPanel();
+}catch(e){toast(e.message,true)}};
 $("#diagBtn").onclick=async()=>{try{let d=await api("/api/diagnostics");$("#diagResult").innerHTML=Object.entries(d.checks||{}).map(([k,v])=>'<div class="metric-row"><span>'+escapeHtml(k)+'</span><b class="'+(v?"accent":"")+'">'+escapeHtml(v)+'</b></div>').join("")}catch(e){toast(e.message,true)}};
 $("#logsBtn").onclick=loadLogs;$("#uninstallBtn").onclick=()=>{if(prompt("برای حذف کامل عبارت UNINSTALL را وارد کن")==="UNINSTALL")runAction("uninstall",{confirm:"UNINSTALL"})};
 window.addEventListener("resize",drawChart);
