@@ -2283,6 +2283,23 @@ def main() -> int:
             if args.cmd == "web-publish":
                 helper += ["configure", "--domain", args.domain]
                 if args.auto_cert:
+                    if not shutil.which("certbot"):
+                        apt = subprocess.run(
+                            ["apt-get", "install", "-y", "certbot"],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if apt.returncode != 0:
+                            raise RuntimeError(
+                                "certbot_install_failed:"
+                                + (apt.stderr or apt.stdout or "")[-500:]
+                            )
+                    subprocess.run(
+                        ["systemctl", "enable", "--now", "certbot.timer"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
                     helper.append("--auto-cert")
                 else:
                     helper.append("--existing-cert")
