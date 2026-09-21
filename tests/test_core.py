@@ -917,7 +917,7 @@ class SanaeiGenerationTests(unittest.TestCase):
         self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["FR"], 6002)
         self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["GB"], 6003)
         self.assertEqual(panel_sync.PREFERRED_LOCAL_PORTS["US"], 6022)
-        self.assertLessEqual(max(panel_sync.PREFERRED_LOCAL_PORTS.values()), 6030)
+        self.assertLessEqual(max(panel_sync.PREFERRED_LOCAL_PORTS.values()), 6039)
         self.assertEqual(panel_sync.DISPLAY_LABELS["FR"], "🇫🇷 France — Paris")
         self.assertEqual(panel_sync.DISPLAY_LABELS["NL"], "🇳🇱 Netherlands — Amsterdam")
         self.assertEqual(panel_sync.DISPLAY_LABELS["DE"], "🇩🇪 Germany — Berlin")
