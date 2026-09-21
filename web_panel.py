@@ -488,7 +488,7 @@ def index() -> Response:
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
-    return {"ok": True, "version": APP_VERSION, "auth_configured": AUTH_FILE.exists()}
+    return {"ok": True}
 
 
 @app.post("/api/login")
