@@ -347,7 +347,7 @@ def _insert_ganj_shared_sni_block(text: str, ports: list[int]) -> str:
     end = len(lines)
     for i in range(start + 1, len(lines)):
         if lines[i] and not lines[i][0].isspace() and re.match(
-            r"^(frontend|backend|listen|global|defaults)\\b",
+            r"^(frontend|backend|listen|global|defaults)\b",
             lines[i],
         ):
             end = i
@@ -943,11 +943,19 @@ class PasarGuardAdapter:
         items = []
         for loc in locs:
             local_port = assigned[loc["country_code"]]
+            reality = (
+                ((template.get("streamSettings") or {}).get("realitySettings"))
+                if isinstance(template, dict)
+                else None
+            )
+            public_sni = _pasarguard_shared_sni(local_port) if isinstance(reality, dict) else None
             items.append({
                 "country_code": loc["country_code"],
                 "name": loc["name"],
                 "gateway_port": int(loc["port"]) if loc.get("available") else None,
                 "local_port": local_port,
+                "public_port": GANJ_SHARED_PUBLIC_PORT if public_sni else local_port,
+                "public_sni": public_sni,
                 "inbound_tag": _pasarguard_location_tag(loc),
                 "host_clone": bool(template_host),
                 "available": bool(loc.get("available")),
