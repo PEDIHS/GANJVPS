@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import ganj_vps
+import panel_sync
 from panel_sync import adapter_from_profile
 
 APP_VERSION = "0.1.0"
@@ -69,6 +70,18 @@ class ActionBody(BaseModel):
 class WebUserBody(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=10, max_length=512)
+
+
+class PanelCredentialsBody(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class PanelTemplateBody(BaseModel):
+    core_id: int | None = None
+    template_inbound_tag: str | None = Field(default=None, max_length=256)
+    template_inbound_id: int | None = None
+    template_host_id: int | None = None
 
 
 app = FastAPI(
@@ -292,10 +305,18 @@ def _safe_panel_snapshot() -> dict[str, Any]:
         adapter = adapter_from_profile(profile)
         status = adapter.status()
         discovery = adapter.discover()
+        cores = []
+        if str(profile.get("type") or "") == "pasarguard":
+            try:
+                adapter.login()
+                cores = adapter.list_cores()
+            except Exception:
+                cores = []
         return {
             "configured": True,
             "status": status,
             "profile": safe_profile,
+            "cores": cores,
             "inbounds": discovery.get("inbounds") or [],
             "hosts": discovery.get("hosts") or [],
         }
@@ -539,6 +560,101 @@ def locations(request: Request) -> dict[str, Any]:
 def panel(request: Request) -> dict[str, Any]:
     _require_session(request)
     return _safe_panel_snapshot()
+
+
+@app.post("/api/panel/credentials")
+def panel_credentials(body: PanelCredentialsBody, request: Request) -> dict[str, Any]:
+    session = _require_csrf(request)
+    profile = ganj_vps.load_json(ganj_vps.PANEL_SECRET_FILE, {})
+    if not isinstance(profile, dict):
+        profile = {}
+    kind = str(profile.get("type") or "pasarguard")
+    if kind != "pasarguard":
+        raise HTTPException(status_code=400, detail="pasarguard_required")
+
+    candidate = dict(profile)
+    candidate.update({
+        "type": "pasarguard",
+        "url": str(profile.get("url") or ganj_vps._detect_pasarguard_local_url()),
+        "username": body.username,
+        "password": body.password,
+        "verify_tls": False,
+        "core_id": int(profile.get("core_id") or 1),
+    })
+    adapter = adapter_from_profile(candidate)
+    adapter.login()
+    status = adapter.status()
+    ganj_vps.save_json(ganj_vps.PANEL_SECRET_FILE, candidate, 0o600)
+    _audit(
+        request,
+        "panel_credentials_updated",
+        True,
+        {"user": session.get("username"), "type": "pasarguard"},
+    )
+    return {"ok": True, "status": status}
+
+
+@app.post("/api/panel/template")
+def panel_template(body: PanelTemplateBody, request: Request) -> dict[str, Any]:
+    session = _require_csrf(request)
+    profile = ganj_vps.panel_profile()
+    kind = str(profile.get("type") or "")
+
+    if kind == "pasarguard":
+        if body.core_id is None or not body.template_inbound_tag:
+            raise HTTPException(status_code=400, detail="core_and_inbound_required")
+        profile["core_id"] = int(body.core_id)
+        adapter = adapter_from_profile(profile)
+        adapter.login()
+        discovery = adapter.discover()
+        inbound = next(
+            (
+                x for x in (discovery.get("inbounds") or [])
+                if str(x.get("tag") or "") == str(body.template_inbound_tag)
+            ),
+            None,
+        )
+        if not inbound:
+            raise HTTPException(status_code=400, detail="inbound_not_found")
+        host = None
+        if body.template_host_id:
+            host = next(
+                (
+                    x for x in (discovery.get("hosts") or [])
+                    if int(x.get("id") or 0) == int(body.template_host_id)
+                ),
+                None,
+            )
+            if not host:
+                raise HTTPException(status_code=400, detail="host_not_found")
+        panel_sync._validate_pasarguard_template_pair(inbound, host)
+        profile["template_inbound_tag"] = str(body.template_inbound_tag)
+        profile["template_host_id"] = int(body.template_host_id or 0)
+        profile["host_port_mode"] = "inbound"
+    elif kind == "sanaei":
+        if body.template_inbound_id is None:
+            raise HTTPException(status_code=400, detail="inbound_required")
+        profile["template_inbound_id"] = int(body.template_inbound_id)
+    else:
+        raise HTTPException(status_code=400, detail="unsupported_panel")
+
+    ganj_vps.save_json(ganj_vps.PANEL_SECRET_FILE, profile, 0o600)
+    verified = adapter_from_profile(profile).status()
+    _audit(
+        request,
+        "panel_template_updated",
+        True,
+        {"user": session.get("username"), "type": kind},
+    )
+    return {"ok": True, "status": verified}
+
+
+@app.get("/api/locations/plan")
+def location_plan(request: Request) -> dict[str, Any]:
+    _require_session(request)
+    profile = ganj_vps.panel_profile()
+    rows = ganj_vps.central_locations()
+    return adapter_from_profile(profile).plan_locations(rows)
 
 
 @app.get("/api/gateways")
