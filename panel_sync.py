@@ -600,126 +600,6 @@ class PasarGuardAdapter:
         data = r.json()
         return data if isinstance(data, list) else []
 
-    def get_groups(self) -> list[dict[str, Any]]:
-        r = self.s.get(
-            f"{self.base}/api/groups",
-            params={"limit": 10000},
-            timeout=30,
-        )
-        r.raise_for_status()
-        data = r.json()
-        rows = data.get("groups") if isinstance(data, dict) else data
-        return rows if isinstance(rows, list) else []
-
-    def update_group(self, group: dict[str, Any]) -> None:
-        group_id = int(group.get("id") or 0)
-        if not group_id:
-            raise RuntimeError("pasarguard_group_id_missing")
-        body = {
-            "name": str(group.get("name") or ""),
-            "inbound_tags": list(group.get("inbound_tags") or []),
-            "is_disabled": bool(group.get("is_disabled")),
-        }
-        r = self.s.put(
-            f"{self.base}/api/group/{group_id}",
-            json=body,
-            timeout=180,
-        )
-        if r.status_code >= 400:
-            detail = (r.text or "").strip()
-            raise RuntimeError(
-                f"pasarguard_group_update_failed_http_{r.status_code}: "
-                f"{detail[:500]}"
-            )
-
-    def template_groups(self) -> list[dict[str, Any]]:
-        return [
-            copy.deepcopy(group)
-            for group in self.get_groups()
-            if self.template_inbound_tag in (group.get("inbound_tags") or [])
-        ]
-
-    def restore_groups(self, snapshot: list[dict[str, Any]]) -> None:
-        for group in snapshot:
-            self.update_group(copy.deepcopy(group))
-
-    def sync_template_groups(
-        self,
-        managed_tags: set[str],
-        snapshot: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        # PasarGuard authorizes/synchronizes users through Group -> Inbound
-        # membership. Cloning only the Core inbound and Host leaves generated
-        # locations unauthenticated for users outside whatever default group
-        # PasarGuard happened to assign. Mirror the selected template's group
-        # memberships for every GANJ-managed inbound.
-        template_groups = (
-            copy.deepcopy(snapshot)
-            if snapshot is not None
-            else self.template_groups()
-        )
-        if not template_groups:
-            return {
-                "template_groups": [],
-                "updated_groups": [],
-                "managed_tags": len(managed_tags),
-                "verified": True,
-            }
-
-        _atomic_backup("pasarguard-groups", template_groups)
-        changed_originals: list[dict[str, Any]] = []
-        updated_ids: list[int] = []
-        ordered_managed = sorted(str(x) for x in managed_tags)
-
-        try:
-            for group in template_groups:
-                existing = list(group.get("inbound_tags") or [])
-                merged = list(dict.fromkeys(existing + ordered_managed))
-                if merged == existing:
-                    continue
-                changed_originals.append(copy.deepcopy(group))
-                payload = copy.deepcopy(group)
-                payload["inbound_tags"] = merged
-                self.update_group(payload)
-                updated_ids.append(int(group.get("id") or 0))
-
-            # Read-after-write verification is mandatory because missing group
-            # membership produces valid-looking Hosts/ports but every client
-            # handshake times out.
-            verify = {int(g.get("id") or 0): g for g in self.get_groups()}
-            missing: dict[int, list[str]] = {}
-            for group in template_groups:
-                gid = int(group.get("id") or 0)
-                current = set((verify.get(gid) or {}).get("inbound_tags") or [])
-                absent = sorted(set(ordered_managed) - current)
-                if absent:
-                    missing[gid] = absent
-            if missing:
-                raise RuntimeError(
-                    "pasarguard_group_membership_verification_failed:"
-                    + ",".join(
-                        f"{gid}:{len(tags)}"
-                        for gid, tags in sorted(missing.items())
-                    )
-                )
-        except Exception:
-            for group in changed_originals:
-                try:
-                    self.update_group(group)
-                except Exception:
-                    pass
-            raise
-
-        return {
-            "template_groups": [
-                {"id": int(g.get("id") or 0), "name": str(g.get("name") or "")}
-                for g in template_groups
-            ],
-            "updated_groups": updated_ids,
-            "managed_tags": len(managed_tags),
-            "verified": True,
-        }
-
     def delete_host(self, host_id: int) -> None:
         r = self.s.delete(f"{self.base}/api/host/{host_id}", timeout=15)
         if r.status_code not in (200, 204, 404):
@@ -883,13 +763,10 @@ class PasarGuardAdapter:
             copy.deepcopy(x) for x in hosts
             if _is_ganj_pasarguard_owned_tag(str(x.get("inbound_tag") or ""))
         ]
-        old_template_groups = self.template_groups()
 
         _atomic_backup("pasarguard-core", old_core)
         if old_managed_hosts:
             _atomic_backup("pasarguard-hosts", old_managed_hosts)
-        if old_template_groups:
-            _atomic_backup("pasarguard-groups-preinstall", old_template_groups)
 
         managed_tags = {_pasarguard_location_tag(x) for x in locs}
         managed_out = {GANJ_OUT_PREFIX + x["country_code"].lower() for x in locs}
@@ -934,13 +811,6 @@ class PasarGuardAdapter:
             })
 
         core_applied = False
-        groups_applied = False
-        group_sync: dict[str, Any] = {
-            "template_groups": [],
-            "updated_groups": [],
-            "managed_tags": len(managed_tags),
-            "verified": False,
-        }
         try:
             self.update_core(core, config)
             core_applied = True
@@ -978,12 +848,6 @@ class PasarGuardAdapter:
                 if not managed_tags.issubset(verify_hosts):
                     raise RuntimeError("pasarguard_post_install_host_verification_failed")
 
-            group_sync = self.sync_template_groups(
-                managed_tags,
-                old_template_groups,
-            )
-            groups_applied = bool(group_sync.get("updated_groups"))
-
             # Only now reload/restart the selected Core/Nodes once. Saving the
             # Core and cloning Hosts are deliberately completed first so users
             # never see a half-applied runtime.
@@ -1020,7 +884,6 @@ class PasarGuardAdapter:
                 "installed": created,
                 "backup": str(BACKUP_DIR),
                 "proxy_publish": proxy_publish,
-                "group_sync": group_sync,
             }
 
         except Exception:
@@ -1028,8 +891,6 @@ class PasarGuardAdapter:
             # objects. Legacy/operator country Hosts are intentionally ignored.
             try:
                 old_config = copy.deepcopy(old_core.get("config") or {})
-                if groups_applied:
-                    self.restore_groups(old_template_groups)
                 if core_applied:
                     self.update_core(old_core, old_config)
                 if template_host:
