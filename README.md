@@ -222,3 +222,20 @@ The installer snapshots the template Groups before changes, adds every managed
 API, verifies the membership by read-back, and includes Group state in the
 existing transaction rollback path. Group updates trigger PasarGuard's native
 user synchronization automatically.
+
+
+### Shared public 443 for GANJ locations
+
+PasarGuard REALITY locations keep their stable local Xray ports (6000–6039)
+but new subscription Hosts are published on public port 443. Each generated
+inbound receives a unique certificate-valid SNI derived from its local port,
+for example `hs-6000.aparat.com`, and HAProxy routes that SNI on the existing
+shared `:443` frontend to the matching local GANJ backend.
+
+The legacy public listeners on 6000–6039 remain active for backwards
+compatibility with already cached client configs. New subscriptions use 443,
+which avoids direct-network filtering of the contiguous high-port range.
+
+The shared SNI block is independently managed inside `frontend ft_single_443`
+and coexists with the representative Web Panel SNI route on the same public
+port. REALITY target/key/short-id and all user credentials remain unchanged.
