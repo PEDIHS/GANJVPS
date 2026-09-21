@@ -306,6 +306,8 @@ def _primary_bind_ipv4() -> str:
 
 _HAPROXY_BEGIN = "# BEGIN GANJ VPS LOCATION PORTS"
 _HAPROXY_END = "# END GANJ VPS LOCATION PORTS"
+_HAPROXY_SNI_BEGIN = "    # BEGIN GANJ VPS LOCATION SNI 443"
+_HAPROXY_SNI_END = "    # END GANJ VPS LOCATION SNI 443"
 
 
 def _haproxy_without_ganj_block(text: str) -> str:
@@ -316,6 +318,68 @@ def _haproxy_without_ganj_block(text: str) -> str:
     start = text.index(_HAPROXY_BEGIN)
     end = text.index(_HAPROXY_END, start) + len(_HAPROXY_END)
     return (text[:start].rstrip() + "\n\n" + text[end:].lstrip()).rstrip() + "\n"
+
+
+def _haproxy_without_ganj_sni_block(text: str) -> str:
+    if _HAPROXY_SNI_BEGIN not in text:
+        return text.rstrip() + "\n"
+    if _HAPROXY_SNI_END not in text:
+        raise RuntimeError("ganj_haproxy_sni_marker_corrupt")
+    start = text.index(_HAPROXY_SNI_BEGIN)
+    end = text.index(_HAPROXY_SNI_END, start) + len(_HAPROXY_SNI_END)
+    return (text[:start].rstrip() + "\n" + text[end:].lstrip("\n")).rstrip() + "\n"
+
+
+def _insert_ganj_shared_sni_block(text: str, ports: list[int]) -> str:
+    desired_ports = sorted({int(x) for x in ports})
+    text = _haproxy_without_ganj_sni_block(text)
+    if not desired_ports:
+        return text
+
+    lines = text.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.strip() == "frontend ft_single_443"),
+        None,
+    )
+    if start is None:
+        raise RuntimeError("ganj_shared_443_frontend_not_found")
+
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i] and not lines[i][0].isspace() and re.match(
+            r"^(frontend|backend|listen|global|defaults)\\b",
+            lines[i],
+        ):
+            end = i
+            break
+
+    insert_at = next(
+        (
+            i for i in range(start + 1, end)
+            if lines[i].strip() == "# BEGIN GANJ WEB SNI"
+        ),
+        None,
+    )
+    if insert_at is None:
+        insert_at = next(
+            (
+                i for i in range(start + 1, end)
+                if lines[i].strip().startswith("default_backend ")
+            ),
+            None,
+        )
+    if insert_at is None:
+        raise RuntimeError("ganj_shared_443_default_backend_not_found")
+
+    block = [_HAPROXY_SNI_BEGIN]
+    for port in desired_ports:
+        block.extend([
+            f"    acl sni_ganj_{port} req.ssl_sni -i {_pasarguard_shared_sni(port)}",
+            f"    use_backend be_ganj_{port} if sni_ganj_{port}",
+        ])
+    block.append(_HAPROXY_SNI_END)
+    lines[insert_at:insert_at] = block
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _ganj_haproxy_block(bind_ip: str, ports: list[int]) -> str:
@@ -351,14 +415,22 @@ def _sync_pasarguard_haproxy_ports(
 
     current = cfg.read_text(encoding="utf-8")
     base = _haproxy_without_ganj_block(current)
+    base = _haproxy_without_ganj_sni_block(base)
     desired_ports = sorted({int(x) for x in ports})
     bind_ip = _primary_bind_ipv4()
     desired = base
     if desired_ports:
         desired = base.rstrip() + "\n\n" + _ganj_haproxy_block(bind_ip, desired_ports)
+    desired = _insert_ganj_shared_sni_block(desired, desired_ports)
 
     if desired == current:
-        return {"managed": True, "ports": desired_ports, "bind_ip": bind_ip}
+        return {
+            "managed": True,
+            "ports": desired_ports,
+            "bind_ip": bind_ip,
+            "public_port": GANJ_SHARED_PUBLIC_PORT if desired_ports else None,
+            "shared_sni": bool(desired_ports),
+        }
 
     candidate = cfg.with_name(cfg.name + ".ganj-candidate")
     candidate.write_text(desired, encoding="utf-8")
@@ -417,7 +489,17 @@ def _sync_pasarguard_haproxy_ports(
                 ",".join(str(x) for x in sorted(missing))
             )
 
-    return {"managed": True, "ports": desired_ports, "bind_ip": bind_ip}
+    live = system_listening_ports()
+    if desired_ports and GANJ_SHARED_PUBLIC_PORT not in live:
+        raise RuntimeError("ganj_shared_public_443_not_listening")
+
+    return {
+        "managed": True,
+        "ports": desired_ports,
+        "bind_ip": bind_ip,
+        "public_port": GANJ_SHARED_PUBLIC_PORT if desired_ports else None,
+        "shared_sni": bool(desired_ports),
+    }
 
 
 def _country_from_ganj_remark(value: str) -> str | None:
