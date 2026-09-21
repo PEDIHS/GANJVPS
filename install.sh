@@ -2,13 +2,14 @@
 set -Eeuo pipefail
 
 APP="GANJ VPS"
-VERSION="0.4.6"
+VERSION="0.5.0"
 REPO="PEDIHS/GANJVPS"
 INSTALL_DIR="/opt/ganj-vps"
 ETC_DIR="/etc/ganj-vps"
 STATE_DIR="/var/lib/ganj-vps"
 RUN_DIR="/run/ganj-vps"
 SERVICE="ganj-vps-agent.service"
+WEB_SERVICE="ganj-vps-web.service"
 DEFAULT_CENTRAL="https://turkey.ufo-tuning.ir/ganj-agent"
 
 if [[ -t 1 ]]; then
@@ -75,6 +76,7 @@ python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --disable-pip-version-check -q -r "$INSTALL_DIR/requirements.txt"
 
 install -m 0644 "$INSTALL_DIR/systemd/ganj-vps-agent.service" "/etc/systemd/system/$SERVICE"
+install -m 0644 "$INSTALL_DIR/systemd/ganj-vps-web.service" "/etc/systemd/system/$WEB_SERVICE"
 cat > /usr/local/bin/ganj-vps <<'EOF'
 #!/usr/bin/env bash
 exec /opt/ganj-vps/venv/bin/python /opt/ganj-vps/ganj_vps.py "$@"
@@ -91,6 +93,8 @@ DEFER_RESTART="${GANJ_DEFER_RESTART:-0}"
 if [[ "$SKIP_ENROLL" == "1" ]]; then
   if [[ "$DEFER_RESTART" != "1" ]]; then
     systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
+    systemctl enable --now "$WEB_SERVICE" >/dev/null 2>&1 || true
+    systemctl try-restart "$WEB_SERVICE" >/dev/null 2>&1 || true
   fi
   ok "GANJ VPS files updated"
   exit 0
@@ -109,7 +113,8 @@ if [[ -n "$ENROLL_TOKEN" ]]; then
   step "Registering this server with GANJ Control"
   if /usr/local/bin/ganj-vps enroll --central "$CENTRAL_URL" --token "$ENROLL_TOKEN"; then
     systemctl enable --now "$SERVICE" >/dev/null
-    ok "Server registered and secure agent started"
+    systemctl enable --now "$WEB_SERVICE" >/dev/null
+    ok "Server registered; secure agent and local web panel started"
 
     if [[ -r /dev/tty ]]; then
       step "Connecting to detected panel"
@@ -139,5 +144,7 @@ say "  ${c_emerald2}${c_bold}✓ GANJ VPS ${VERSION} is ready${c_reset}"
 say "  ${c_dim}CLI${c_reset}       ${c_gold}ganj-vps${c_reset}"
 say "  ${c_dim}Live${c_reset}      ganj-vps status --watch"
 say "  ${c_dim}Health${c_reset}    ganj-vps diagnostics"
+say "  ${c_dim}Web${c_reset}       http://127.0.0.1:9877  ${c_dim}(local only until HTTPS proxy is configured)${c_reset}"
+say "  ${c_dim}Login${c_reset}     ganj-vps web-user --username <name>"
 rule
 say

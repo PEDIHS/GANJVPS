@@ -34,7 +34,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.4.6"
+APP_VERSION = "0.5.0"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -2197,6 +2197,9 @@ def build_parser() -> argparse.ArgumentParser:
     gs.add_argument("identifier", nargs="?", default="best")
     rec = sub.add_parser("reconcile")
     rec.add_argument("--force", action="store_true")
+    wu = sub.add_parser("web-user")
+    wu.add_argument("--username", required=True)
+    sub.add_parser("web-status")
     return p
 
 def main() -> int:
@@ -2251,6 +2254,30 @@ def main() -> int:
         if args.cmd == "reconcile":
             desired = CentralClient(AgentConfig.load()).desired()
             print(json.dumps(reconcile_desired(desired, force=bool(args.force)), ensure_ascii=False, indent=2))
+            return 0
+        if args.cmd == "web-user":
+            cmd = [
+                str(INSTALL_DIR / "venv" / "bin" / "python"),
+                str(INSTALL_DIR / "web_panel.py"),
+                "set-user",
+                "--username",
+                args.username,
+            ]
+            p = subprocess.run(cmd)
+            if p.returncode == 0:
+                subprocess.run(["systemctl", "enable", "--now", "ganj-vps-web.service"], check=False)
+                subprocess.run(["systemctl", "restart", "ganj-vps-web.service"], check=False)
+            return int(p.returncode)
+        if args.cmd == "web-status":
+            print(json.dumps({
+                "service": _service_state("ganj-vps-web.service") if "_service_state" in globals() else subprocess.run(
+                    ["systemctl", "is-active", "ganj-vps-web.service"],
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                "bind": "127.0.0.1:9877",
+                "auth_configured": Path("/etc/ganj-vps/web-auth.json").exists(),
+            }, ensure_ascii=False, indent=2))
             return 0
         if args.cmd == "update":
             return update_self()

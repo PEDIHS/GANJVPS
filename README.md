@@ -1,6 +1,6 @@
 # GANJ VPS
 
-GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.4.6**.
+GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.5.0**.
 
 It is designed for servers running supported Xray panels such as Sanaei 3x-ui and PasarGuard, and connects them to a GANJ central gateway through a managed WireGuard control/data plane.
 
@@ -85,3 +85,44 @@ Copyright © 2026 GANJ VPS. All rights reserved.
 - PasarGuard localhost/PROXY-protocol templates are automatically published through validated HAProxy frontends on ports 6000–6039
 
 - PasarGuard Host templates must belong to the selected Inbound; incompatible Host/Inbound pairs are rejected before installation.
+
+
+## Representative Web Panel
+
+GANJ VPS includes a local representative dashboard bound to `127.0.0.1:9877`.
+It is intentionally not exposed directly to the Internet. Publish it only through
+an authenticated HTTPS reverse proxy on the representative server.
+
+The mobile-first Emerald/Gold UI mirrors the node CLI capabilities:
+
+- License traffic used/limit, live RX/TX, active connections and server CPU/RAM/disk
+- 40-location health with ONLINE / DEGRADED / OFFLINE / NO UPSTREAM states
+- PasarGuard status, Core/Inbound/Host template selection and local credential reconnect
+- Location plan/sync/rebuild/remove
+- Gateway ranking, Best Ping switch, add/remove local gateways
+- WireGuard and HAProxy health
+- Central sync, reconcile, diagnostics, agent logs, update and uninstall
+
+Security boundaries:
+
+- Web backend listens on loopback only
+- Passwords use Argon2id and are stored only in `/etc/ganj-vps/web-auth.json`
+- Secure + HttpOnly + SameSite session cookies
+- CSRF protection for all modifying actions
+- Login rate limiting and audit log at `/var/log/ganj-vps/web-audit.jsonl`
+- No arbitrary shell endpoint; maintenance operations are allow-listed
+- Central control-plane URL, WireGuard endpoint and managed gateway endpoints are hidden
+  from representative-facing APIs and logs
+
+Configure a local web login with:
+
+```bash
+ganj-vps web-user --username representative
+```
+
+The service can be checked with:
+
+```bash
+ganj-vps web-status
+systemctl status ganj-vps-web
+```
