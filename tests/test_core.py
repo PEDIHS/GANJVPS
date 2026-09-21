@@ -622,6 +622,208 @@ class PasarGuardGroupSyncTests(unittest.TestCase):
         self.assertTrue(result["verified"])
 
 
+class PasarGuardShared443Tests(unittest.TestCase):
+    def test_reality_inbound_gets_unique_shared_sni_and_host_443(self):
+        inbound = {
+            "tag": "ganj-de",
+            "port": 6000,
+            "protocol": "vless",
+            "streamSettings": {
+                "security": "reality",
+                "realitySettings": {
+                    "target": "www.aparat.com:443",
+                    "serverNames": ["link.aparat.com"],
+                },
+            },
+        }
+        sni = panel_sync._apply_pasarguard_shared_sni(inbound, 6000)
+        self.assertEqual(sni, "hs-6000.aparat.com")
+        self.assertIn(
+            "hs-6000.aparat.com",
+            inbound["streamSettings"]["realitySettings"]["serverNames"],
+        )
+        host = panel_sync._clone_pasarguard_host(
+            {
+                "id": 77,
+                "inbound_tag": "template",
+                "port": 2053,
+                "remark": "Template",
+                "address": ["ganjvps.pedramhs.ir"],
+                "sni": ["link.aparat.com"],
+                "security": "inbound_default",
+            },
+            "ganj-de",
+            6000,
+            "Germany",
+            public_sni=sni,
+        )
+        self.assertEqual(host["port"], 443)
+        self.assertEqual(host["sni"], ["hs-6000.aparat.com"])
+        self.assertEqual(host["address"], ["ganjvps.pedramhs.ir"])
+        self.assertNotIn("id", host)
+
+    def test_non_reality_host_keeps_local_public_port(self):
+        inbound = {
+            "tag": "ganj-de",
+            "port": 6000,
+            "protocol": "vless",
+            "streamSettings": {"security": "none"},
+        }
+        self.assertIsNone(
+            panel_sync._apply_pasarguard_shared_sni(inbound, 6000)
+        )
+        host = panel_sync._clone_pasarguard_host(
+            {
+                "id": 1,
+                "inbound_tag": "template",
+                "port": 2053,
+                "sni": ["example.test"],
+            },
+            "ganj-de",
+            6000,
+            "Germany",
+        )
+        self.assertEqual(host["port"], 6000)
+        self.assertEqual(host["sni"], ["example.test"])
+
+    def test_haproxy_shared_sni_block_precedes_web_and_is_idempotent(self):
+        base = """global
+    daemon
+
+defaults
+    mode tcp
+
+frontend ft_single_443
+    mode tcp
+    bind 0.0.0.0:443
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req_ssl_hello_type 1 }
+    # BEGIN GANJ WEB SNI
+    acl sni_ganj_web req.ssl_sni -i status.example.test
+    use_backend be_ganj_web_tls if sni_ganj_web
+    # END GANJ WEB SNI
+    default_backend be_panel
+
+backend be_panel
+    mode tcp
+"""
+        rendered = panel_sync._insert_ganj_shared_sni_block(
+            base,
+            [6000, 6001],
+        )
+        self.assertIn(
+            "acl sni_ganj_6000 req.ssl_sni -i hs-6000.aparat.com",
+            rendered,
+        )
+        self.assertIn(
+            "use_backend be_ganj_6001 if sni_ganj_6001",
+            rendered,
+        )
+        self.assertLess(
+            rendered.index(panel_sync._HAPROXY_SNI_BEGIN),
+            rendered.index("# BEGIN GANJ WEB SNI"),
+        )
+        rendered2 = panel_sync._insert_ganj_shared_sni_block(
+            rendered,
+            [6000, 6001],
+        )
+        self.assertEqual(rendered2.count(panel_sync._HAPROXY_SNI_BEGIN), 1)
+
+    @without_live_ports
+    def test_reality_install_publishes_hosts_on_shared_443(self):
+        panel_sync.BACKUP_DIR = Path(tempfile.mkdtemp(prefix="ganj-vps-443-test-"))
+        adapter = PasarGuardAdapter({
+            "url": "http://127.0.0.1:8000",
+            "username": "test",
+            "password": "test",
+            "core_id": 1,
+            "template_inbound_tag": "template",
+            "template_host_id": 77,
+            "base_port": 6000,
+        })
+        adapter.login = lambda: None
+        core = {
+            "name": "main",
+            "type": "xray",
+            "exclude_inbound_tags": [],
+            "fallbacks_inbound_tags": [],
+            "config": {
+                "inbounds": [{
+                    "tag": "template",
+                    "port": 2053,
+                    "protocol": "vless",
+                    "listen": "",
+                    "settings": {},
+                    "streamSettings": {
+                        "security": "reality",
+                        "realitySettings": {
+                            "target": "www.aparat.com:443",
+                            "serverNames": ["link.aparat.com"],
+                        },
+                    },
+                }],
+                "outbounds": [],
+                "routing": {"rules": []},
+            },
+        }
+        hosts = [{
+            "id": 77,
+            "remark": "Template Host",
+            "inbound_tag": "template",
+            "port": 2053,
+            "address": ["ganjvps.pedramhs.ir"],
+            "sni": ["link.aparat.com"],
+            "security": "inbound_default",
+        }]
+        adapter.get_core = lambda: copy.deepcopy(core)
+        adapter.get_hosts = lambda: copy.deepcopy(hosts)
+        adapter.template_groups = lambda: []
+        adapter.update_core = lambda old, cfg: core.update({"config": copy.deepcopy(cfg)})
+        adapter.restart_core = lambda old, cfg: None
+        adapter.delete_host = lambda host_id: hosts.__setitem__(
+            slice(None),
+            [x for x in hosts if int(x.get("id") or 0) != int(host_id)],
+        )
+        next_id = [100]
+        def create_host(host):
+            row = copy.deepcopy(host)
+            row["id"] = next_id[0]
+            next_id[0] += 1
+            hosts.append(row)
+        adapter.create_host = create_host
+
+        result = adapter.install_locations([
+            {"country_code": "DE", "name": "Germany", "port": 1082, "enabled": True},
+            {"country_code": "NL", "name": "Netherlands", "port": 1081, "enabled": True},
+        ])
+
+        managed_hosts = [
+            x for x in hosts
+            if str(x.get("inbound_tag") or "").startswith("ganj-")
+        ]
+        self.assertEqual([x["port"] for x in managed_hosts], [443, 443])
+        self.assertEqual(
+            [x["sni"] for x in managed_hosts],
+            [["hs-6000.aparat.com"], ["hs-6001.aparat.com"]],
+        )
+        managed_inbounds = [
+            x for x in core["config"]["inbounds"]
+            if str(x.get("tag") or "").startswith("ganj-")
+        ]
+        self.assertIn(
+            "hs-6000.aparat.com",
+            managed_inbounds[0]["streamSettings"]["realitySettings"]["serverNames"],
+        )
+        self.assertIn(
+            "hs-6001.aparat.com",
+            managed_inbounds[1]["streamSettings"]["realitySettings"]["serverNames"],
+        )
+        self.assertEqual(
+            [x["public_port"] for x in result["installed"]],
+            [443, 443],
+        )
+
+
 class PasarGuardGenerationTests(unittest.TestCase):
     def test_unrelated_flag_prefixed_objects_are_not_ganj_owned(self):
         self.assertIsNone(panel_sync._country_from_ganj_remark("🇩🇪 Personal"))
