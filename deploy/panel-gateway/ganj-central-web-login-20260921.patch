@@ -281,25 +281,170 @@
      code = body.country_code.upper() if body.country_code else None
 --- a/var/www/panel/index.html
 +++ b/var/www/panel/index.html
-@@ -177,6 +177,8 @@
-     <div class="field"><label>اعتبار توکن نصب</label><select id="ganjTokenTtl"><option value="15">15 دقیقه</option><option value="30" selected>30 دقیقه</option><option value="60">1 ساعت</option><option value="360">6 ساعت</option></select></div>
-     <div class="field"><label>مدت لایسنس (روز، 0 = نامحدود)</label><input id="ganjLicenseDays" type="number" min="0" max="3650" value="30"></div>
-     <div class="field"><label>سقف ترافیک GB (خالی = نامحدود)</label><input id="ganjTrafficLimit" type="number" min="0.1" step="0.1" placeholder="نامحدود"></div>
-+    <div class="field"><label>نام کاربری پنل وب</label><input id="ganjWebUsername" autocomplete="off" placeholder="مثلاً armin"></div>
-+    <div class="field"><label>رمز پنل وب</label><input id="ganjWebPassword" type="password" autocomplete="new-password" minlength="10" placeholder="حداقل ۱۰ کاراکتر"></div>
-     <div class="span2"><button class="btn primary" style="width:100%" onclick="createGanjToken()">ساخت نماینده و صدور توکن</button></div>
-    </div>
-    <div id="ganjTokenBox" style="display:none;margin-top:12px;padding:12px;border:1px solid #314155;border-radius:11px;background:#0d131a">
-@@ -196,7 +198,7 @@
+@@ -38,7 +38,58 @@
+ @media(max-width:760px){.sidebar{transform:translateX(100%);transition:.2s}.sidebar.open{transform:translateX(0)}.stage{margin-right:0;width:100%}.topbar{padding:0 15px}.mobile-menu{display:inline-flex}.statusline .pill.hide-mobile{display:none}main{padding:18px 14px 40px}.cards{grid-template-columns:1fr 1fr}.form-grid{grid-template-columns:1fr}.span2{grid-column:auto}}
+ @media(max-width:470px){.cards{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}}
+ .loc-table tbody tr{transition:background .18s ease,transform .18s ease}.loc-table tbody tr:hover{background:rgba(255,255,255,.025)}
+-.loc-country{display:flex;align-items:center;gap:10px;min-width:180px}.flag-orb{width:38px;height:27px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px;border-radius:7px;overflow:hidden;background:#111820;border:1px solid rgba(255,255,255,.10);box-shadow:0 5px 16px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.06)}.flag-orb img{width:100%;height:100%;object-fit:cover;display:block}.loc-country-text{display:flex;flex-direction:column;gap:2px}.loc-country-name{font-size:12px;font-weight:700;color:#edf3fb;letter-spacing:.1px}.loc-country-code{font-size:9px;color:#718094;text-transform:uppercase;letter-spacing:.8px}.port-chip{direction:ltr;display:inline-flex;align-items:center;padding:4px 8px;border-radius:8px;background:#0d131a;border:1px solid #26313d;color:#d6e3f2;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.num-strong{font-size:12px;font-weight:700;color:#edf3fb}.latency{direction:ltr;display:inline-block;color:#aab8c8}.loc-table th:first-child,.loc-table td:first-child{position:sticky;right:0;z-index:1}.loc-table th:first-child{z-index:2}.loc-table td:first-child{background:#0f141a}.loc-table tr:hover td:first-child{background:#121920}</style>
++.loc-country{display:flex;align-items:center;gap:10px;min-width:180px}.flag-orb{width:38px;height:27px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px;border-radius:7px;overflow:hidden;background:#111820;border:1px solid rgba(255,255,255,.10);box-shadow:0 5px 16px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.06)}.flag-orb img{width:100%;height:100%;object-fit:cover;display:block}.loc-country-text{display:flex;flex-direction:column;gap:2px}.loc-country-name{font-size:12px;font-weight:700;color:#edf3fb;letter-spacing:.1px}.loc-country-code{font-size:9px;color:#718094;text-transform:uppercase;letter-spacing:.8px}.port-chip{direction:ltr;display:inline-flex;align-items:center;padding:4px 8px;border-radius:8px;background:#0d131a;border:1px solid #26313d;color:#d6e3f2;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px}.num-strong{font-size:12px;font-weight:700;color:#edf3fb}.latency{direction:ltr;display:inline-block;color:#aab8c8}.loc-table th:first-child,.loc-table td:first-child{position:sticky;right:0;z-index:1}.loc-table th:first-child{z-index:2}.loc-table td:first-child{background:#0f141a}.loc-table tr:hover td:first-child{background:#121920}
++/* GANJ representatives — management cards */
++.rep-kpis{margin-bottom:16px}
++.rep-onboard{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,.5fr);gap:14px;margin-bottom:18px}
++.rep-create{overflow:hidden}
++.rep-create-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
++.rep-create-head h2{font-size:15px;margin:0}.rep-create-head p{font-size:10px;color:var(--muted);margin:4px 0 0}
++.rep-form-groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
++.rep-form-group{padding:13px;border:1px solid #202a35;border-radius:13px;background:#0d1218}
++.rep-form-group-title{display:flex;align-items:center;gap:7px;margin-bottom:11px;font-size:11px;font-weight:700;color:#dbe4f0}
++.rep-form-group-title i{width:7px;height:7px;border-radius:99px;background:var(--accent);box-shadow:0 0 12px rgba(107,140,255,.5)}
++.rep-form-group .field+.field{margin-top:9px}
++.rep-create-submit{display:flex;gap:9px;align-items:center;margin-top:12px}
++.rep-create-submit .btn{min-width:190px}
++.rep-token-box{display:none;margin-top:12px;padding:12px;border:1px solid rgba(83,213,138,.25);border-radius:12px;background:rgba(83,213,138,.06)}
++.rep-token-row{display:flex;gap:8px;align-items:center;margin-top:7px}.rep-token-row code{direction:ltr;overflow:auto;flex:1;padding:7px 9px;background:#090d12;border:1px solid #26313d;border-radius:8px;color:#dce8f7}
++.rep-info-stack{display:grid;gap:9px}.rep-info-item{padding:11px;border:1px solid #202a35;border-radius:11px;background:#0d1218}
++.rep-info-item small{display:block;color:var(--muted);font-size:9px}.rep-info-item b{display:block;margin-top:4px;font-size:11px}
++.rep-list-shell{margin-top:4px}
++.rep-list-head{display:flex;align-items:end;justify-content:space-between;gap:14px;margin-bottom:12px}
++.rep-list-head h2{font-size:15px;margin:0}.rep-list-head p{font-size:10px;color:var(--muted);margin:3px 0 0}
++.rep-filters{display:flex;gap:8px;align-items:center}.rep-search{min-width:220px}
++.rep-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
++.rep-card{position:relative;background:linear-gradient(160deg,rgba(17,23,30,.98),rgba(12,16,22,.98));border:1px solid #222c37;border-radius:16px;padding:15px;box-shadow:0 14px 38px rgba(0,0,0,.18);overflow:hidden}
++.rep-card:before{content:"";position:absolute;inset:0 auto auto 0;width:100%;height:2px;background:linear-gradient(90deg,var(--accent),var(--cyan),transparent);opacity:.7}
++.rep-card.problem:before{background:linear-gradient(90deg,var(--red),var(--amber),transparent)}
++.rep-card.pending:before{background:linear-gradient(90deg,var(--amber),transparent)}
++.rep-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:13px}
++.rep-identity{display:flex;gap:10px;align-items:center;min-width:0}.rep-avatar{width:42px;height:42px;flex:0 0 42px;border-radius:13px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(107,140,255,.24),rgba(141,107,255,.14));border:1px solid rgba(107,140,255,.28);font-size:16px;font-weight:800;color:#e5ebff}
++.rep-name{min-width:0}.rep-name b{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rep-name small{display:block;color:var(--muted);font-size:9px;margin-top:3px;direction:ltr;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
++.rep-head-state{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
++.rep-blocks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
++.rep-block{padding:11px;border:1px solid #202a35;border-radius:12px;background:rgba(9,13,18,.56);min-width:0}
++.rep-block-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}.rep-block-head span{font-size:10px;color:#8d99a8}.rep-block-head b{font-size:10px;font-weight:600}
++.rep-data{display:grid;gap:6px}.rep-data-line{display:flex;align-items:center;justify-content:space-between;gap:9px;font-size:10px}.rep-data-line span{color:var(--muted);white-space:nowrap}.rep-data-line b,.rep-data-line code{font-size:10px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.rep-license-line{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}.rep-license-line small{color:var(--muted);font-size:9px}
++.rep-traffic{height:5px;border-radius:99px;background:#1c2430;overflow:hidden;margin:8px 0 5px}.rep-traffic i{height:100%;display:block;border-radius:inherit;background:linear-gradient(90deg,var(--accent),var(--cyan))}
++.rep-traffic-meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:9px;direction:ltr}
++.rep-location-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px}.rep-location-row select{min-width:0;width:100%;padding:7px 8px;background:#0d1116;border:1px solid #27313d;color:#fff;border-radius:8px;font-size:10px}
++.rep-applied{display:flex;align-items:center;justify-content:space-between;margin-top:8px;font-size:9px;color:var(--muted)}.rep-applied b{color:#d8e1ee}
++.rep-web-user{direction:ltr;text-align:right;color:#dce5f1}
++.rep-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;padding-top:11px;border-top:1px solid #1d2630}
++.rep-actions-main,.rep-actions-danger{display:flex;gap:6px;flex-wrap:wrap}.rep-actions .btn{padding:6px 8px}
++.rep-pending-box{padding:11px;border:1px solid rgba(243,184,91,.18);background:rgba(243,184,91,.055);border-radius:11px;margin-top:10px}.rep-pending-box small{color:#bea875;font-size:9px}
++.rep-token-meta{display:flex;gap:9px;flex-wrap:wrap;margin-top:6px;font-size:9px;color:var(--muted)}
++.rep-last-seen{font-size:9px;color:var(--muted);margin-top:7px}
++.rep-empty{grid-column:1/-1}
++@media(max-width:1180px){.rep-onboard{grid-template-columns:1fr}.rep-form-groups{grid-template-columns:repeat(2,1fr)}.rep-grid{grid-template-columns:1fr}}
++@media(max-width:760px){.rep-form-groups{grid-template-columns:1fr}.rep-list-head{align-items:stretch;flex-direction:column}.rep-filters{display:grid;grid-template-columns:1fr 1fr}.rep-search{min-width:0}.rep-blocks{grid-template-columns:1fr}.rep-actions{align-items:stretch;flex-direction:column}.rep-actions-main,.rep-actions-danger{display:grid;grid-template-columns:repeat(2,1fr)}.rep-actions .btn{width:100%;min-height:38px}.rep-create-submit{align-items:stretch;flex-direction:column}.rep-create-submit .btn{width:100%}.rep-card{padding:13px}}
++@media(max-width:470px){.rep-filters{grid-template-columns:1fr}.rep-card-head{align-items:flex-start}.rep-head-state{max-width:120px}.rep-actions-main,.rep-actions-danger{grid-template-columns:1fr 1fr}}
++
++</style>
+ </head>
+ <body>
+ <aside class="sidebar" id="sidebar">
+@@ -161,42 +212,75 @@
+ </section>
+ 
+ <section class="page" id="page-nodes">
+- <div class="page-head"><div><h1>نمایندگان GANJ VPS</h1><p>صدور توکن، اتصال پنل نماینده، سهمیه، انقضا و وضعیت لحظه‌ای</p></div><div class="actions"><button class="btn" onclick="loadGanjNodes()">بروزرسانی</button></div></div>
+- <div class="section-note">هر توکن به نام یک نماینده صادر می‌شود. نماینده از لحظه صدور توکن در لیست دیده می‌شود و پس از نصب Agent، همان رکورد به پنل متصل تبدیل می‌شود. توکن یک‌بارمصرف است و Secret پنل یا کانفیگ خام در این صفحه نمایش داده نمی‌شود.</div>
+- <div class="cards" style="margin-bottom:14px">
++ <div class="page-head">
++  <div><h1>نمایندگان GANJ VPS</h1><p>مدیریت نماینده، دسترسی وب، اشتراک و وضعیت Node در یک نمای واحد</p></div>
++  <div class="actions"><button class="btn" onclick="loadGanjNodes()">بروزرسانی</button></div>
++ </div>
++ <div class="cards rep-kpis">
+   <div class="metric"><div class="label">کل نمایندگان</div><div class="value" id="ganjRepTotal">0</div><div class="hint">صادرشده + متصل</div></div>
+-  <div class="metric"><div class="label">پنل آنلاین</div><div class="value" id="ganjRepOnline">0</div><div class="hint">Heartbeat کمتر از 60 ثانیه</div></div>
+-  <div class="metric"><div class="label">توکن در انتظار</div><div class="value" id="ganjTokenPending">0</div><div class="hint">هنوز مصرف نشده</div></div>
+-  <div class="metric"><div class="label">مصرف نمایندگان</div><div class="value" id="ganjRepTraffic">0 GB</div><div class="hint">RX + TX حساب‌شده</div></div>
++  <div class="metric"><div class="label">آنلاین</div><div class="value" id="ganjRepOnline">0</div><div class="hint">Heartbeat کمتر از 60 ثانیه</div></div>
++  <div class="metric"><div class="label">در انتظار نصب</div><div class="value" id="ganjTokenPending">0</div><div class="hint">توکن هنوز مصرف نشده</div></div>
++  <div class="metric"><div class="label">مصرف کل</div><div class="value" id="ganjRepTraffic">0 GB</div><div class="hint">RX + TX نمایندگان</div></div>
   </div>
-  <div class="card" style="margin-top:14px">
-   <div class="card-title"><h2>نمایندگان</h2><span id="ganjNodeCount">0 نماینده</span></div>
+- <div class="grid2">
+-  <div class="card">
+-   <div class="card-title"><h2>صدور توکن نماینده</h2><span>One-time / Expiring</span></div>
+-   <div class="form-grid">
+-    <div class="field"><label>نام نماینده</label><input id="ganjTokenLabel" required placeholder="مثلاً نماینده تهران"></div>
+-    <div class="field"><label>اعتبار توکن نصب</label><select id="ganjTokenTtl"><option value="15">15 دقیقه</option><option value="30" selected>30 دقیقه</option><option value="60">1 ساعت</option><option value="360">6 ساعت</option></select></div>
+-    <div class="field"><label>مدت لایسنس (روز، 0 = نامحدود)</label><input id="ganjLicenseDays" type="number" min="0" max="3650" value="30"></div>
+-    <div class="field"><label>سقف ترافیک GB (خالی = نامحدود)</label><input id="ganjTrafficLimit" type="number" min="0.1" step="0.1" placeholder="نامحدود"></div>
+-    <div class="span2"><button class="btn primary" style="width:100%" onclick="createGanjToken()">ساخت نماینده و صدور توکن</button></div>
++
++ <div class="rep-onboard">
++  <div class="card rep-create">
++   <div class="rep-create-head">
++    <div><h2>ساخت نماینده جدید</h2><p>توکن یک‌بارمصرف، لایسنس و ورود Web Panel را یکجا تعیین کن</p></div>
++    <span class="tag">One-time Token</span>
+    </div>
+-   <div id="ganjTokenBox" style="display:none;margin-top:12px;padding:12px;border:1px solid #314155;border-radius:11px;background:#0d131a">
+-    <small style="color:var(--muted)">فقط همین بار نمایش داده می‌شود</small>
+-    <div style="display:flex;gap:8px;margin-top:7px"><code id="ganjTokenValue" style="direction:ltr;overflow:auto;flex:1"></code><button class="btn small" onclick="copyGanjToken()">کپی</button></div>
++   <div class="rep-form-groups">
++    <div class="rep-form-group">
++     <div class="rep-form-group-title"><i></i>هویت و نصب</div>
++     <div class="field"><label>نام نماینده</label><input id="ganjTokenLabel" required placeholder="مثلاً نماینده تهران"></div>
++     <div class="field"><label>اعتبار توکن نصب</label><select id="ganjTokenTtl"><option value="15">15 دقیقه</option><option value="30" selected>30 دقیقه</option><option value="60">1 ساعت</option><option value="360">6 ساعت</option></select></div>
++    </div>
++    <div class="rep-form-group">
++     <div class="rep-form-group-title"><i></i>اشتراک</div>
++     <div class="field"><label>مدت لایسنس</label><input id="ganjLicenseDays" type="number" min="0" max="3650" value="30" placeholder="روز"></div>
++     <div class="field"><label>سقف ترافیک</label><input id="ganjTrafficLimit" type="number" min="0.1" step="0.1" placeholder="نامحدود · GB"></div>
++    </div>
++    <div class="rep-form-group">
++     <div class="rep-form-group-title"><i></i>ورود Web Panel</div>
++     <div class="field"><label>نام کاربری</label><input id="ganjWebUsername" autocomplete="off" placeholder="representative"></div>
++     <div class="field"><label>رمز عبور</label><input id="ganjWebPassword" type="password" autocomplete="new-password" minlength="10" placeholder="حداقل ۱۰ کاراکتر"></div>
++    </div>
++   </div>
++   <div class="rep-create-submit">
++    <button class="btn primary" onclick="createGanjToken()">ساخت نماینده و صدور توکن</button>
++    <span style="font-size:9px;color:var(--muted)">رمز Web Panel به‌صورت Argon2id نگهداری می‌شود.</span>
++   </div>
++   <div id="ganjTokenBox" class="rep-token-box">
++    <small style="color:#8edcaf">توکن نصب فقط همین بار نمایش داده می‌شود</small>
++    <div class="rep-token-row"><code id="ganjTokenValue"></code><button class="btn small" onclick="copyGanjToken()">کپی</button></div>
+    </div>
+   </div>
+   <div class="card">
+-   <div class="card-title"><h2>Installer</h2><span>PEDIHS/GANJVPS</span></div>
+-   <div class="kv">
+-    <div><small>Agent API</small><b>HTTPS / Bearer</b></div>
+-    <div><small>Data Plane</small><b>WireGuard</b></div>
+-    <div><small>Panel Support</small><b>Sanaei / PasarGuard</b></div>
+-    <div><small>Locations</small><b>30 curated</b></div>
++   <div class="card-title"><h2>معماری نماینده</h2><span>Secure Node</span></div>
++   <div class="rep-info-stack">
++    <div class="rep-info-item"><small>کنترل</small><b>Central → Command Queue → Agent</b></div>
++    <div class="rep-info-item"><small>دیتاپلن</small><b>WireGuard · Gateway managed</b></div>
++    <div class="rep-info-item"><small>پنل‌های پشتیبانی‌شده</small><b>PasarGuard / Sanaei</b></div>
++    <div class="rep-info-item"><small>Web Panel</small><b>HTTPS · Local Agent · Argon2id</b></div>
+    </div>
+   </div>
+  </div>
+- <div class="card" style="margin-top:14px">
+-  <div class="card-title"><h2>نمایندگان</h2><span id="ganjNodeCount">0 نماینده</span></div>
 -  <div class="table-wrap"><table class="table" style="min-width:1250px"><thead><tr><th>نماینده</th><th>وضعیت پنل</th><th>توکن / انقضا</th><th>وضعیت</th><th>لایسنس / انقضا</th><th>مصرف / سقف</th><th>WG</th><th>Desired</th><th>Applied</th><th>آخرین ارتباط</th><th>عملیات</th></tr></thead><tbody id="ganjNodeRows"></tbody></table></div>
-+  <div class="table-wrap"><table class="table" style="min-width:1250px"><thead><tr><th>نماینده</th><th>وضعیت پنل</th><th>ورود وب</th><th>توکن / انقضا</th><th>وضعیت</th><th>لایسنس / انقضا</th><th>مصرف / سقف</th><th>WG</th><th>Desired</th><th>Applied</th><th>آخرین ارتباط</th><th>عملیات</th></tr></thead><tbody id="ganjNodeRows"></tbody></table></div>
++
++ <div class="card rep-list-shell">
++  <div class="rep-list-head">
++   <div><h2>نمایندگان</h2><p id="ganjNodeCount">0 نماینده</p></div>
++   <div class="rep-filters">
++    <input id="ganjRepSearch" class="input rep-search" placeholder="جستجو نام، شناسه، یوزرنیم..." oninput="renderGanjNodes()">
++    <select id="ganjRepFilter" class="input" onchange="renderGanjNodes()">
++     <option value="all">همه وضعیت‌ها</option>
++     <option value="online">آنلاین</option>
++     <option value="offline">آفلاین</option>
++     <option value="pending">در انتظار نصب</option>
++     <option value="problem">دارای مشکل</option>
++    </select>
++   </div>
++  </div>
++  <div id="ganjNodeCards" class="rep-grid"></div>
   </div>
  </section>
  
-@@ -264,6 +266,7 @@
+@@ -264,6 +348,7 @@
  </section>
  
  <div class="modal" id="dialogsModal"><div class="modal-box"><div class="modal-head"><div><b>انتخاب سورس</b><div class="top-sub">کانال یا گروه موردنظر را به Collector اضافه کن</div></div><button class="btn small" onclick="closeModal()">بستن</button></div><div class="dialog-list" id="dialogList"></div></div></div>
@@ -307,7 +452,7 @@
  <div class="toast" id="toast"></div>
  </main>
  </section>
-@@ -522,7 +525,7 @@
+@@ -522,7 +607,7 @@
      poolRoot.appendChild(tr);
     }
    }
@@ -316,34 +461,167 @@
    if(poolRoot&&!d.items.length)poolRoot.innerHTML='<tr><td colspan="11"><div class="empty">Pool ثبت نشده</div></td></tr>';
   }catch(e){toast(e.message,true)}
  }
-@@ -601,12 +604,16 @@
-    const licReasonMap={expired:'منقضی',quota_exceeded:'اتمام حجم',revoked:'لغوشده',pending_enrollment:'منتظر فعال‌سازی'};
-    const licCls=lic.active?'good':(pending?'warn':'bad');
-    const licText=lic.active?('اشتراک فعال · '+lexp):(pending?('اشتراک محفوظ · '+(lexp==='∞'?((tok.license_days??lic.license_days??0)+' روز پس از فعال‌سازی'):lexp)):esc(licReasonMap[lic.reason]||lic.reason||'غیرفعال'));
+@@ -566,66 +651,104 @@
+ 
+ 
+ let GANJ_LOCS=[];
++let GANJ_NODES=[];
++
++function ganjStatusClass(n){
++ if(!n.node_id&&!n.id)return 'pending';
++ if(['revoked','expired','quota_exceeded','ip_mismatch','identity_mismatch'].includes(n.status))return 'problem';
++ if(!n.panel_connected)return 'problem';
++ return '';
++}
++function ganjFilterMatch(n){
++ const q=(document.getElementById('ganjRepSearch')?.value||'').trim().toLowerCase();
++ const f=document.getElementById('ganjRepFilter')?.value||'all';
++ const nodeId=n.node_id||n.id||null;
++ const web=n.web_login||{};
++ const hay=[n.name,n.hostname,n.representative_id,nodeId,web.username,n.bound_ip].filter(Boolean).join(' ').toLowerCase();
++ if(q&&!hay.includes(q))return false;
++ if(f==='online'&&!n.panel_connected)return false;
++ if(f==='offline'&&(n.panel_connected||!nodeId))return false;
++ if(f==='pending'&&nodeId)return false;
++ if(f==='problem'&&ganjStatusClass(n)!=='problem')return false;
++ return true;
++}
++function renderGanjNodes(){
++ const root=document.getElementById('ganjNodeCards'); if(!root)return;
++ const items=GANJ_NODES.filter(ganjFilterMatch);
++ setText('ganjNodeCount',items.length===GANJ_NODES.length?items.length+' نماینده':items.length+' از '+GANJ_NODES.length+' نماینده');
++ root.innerHTML='';
++ if(!items.length){root.innerHTML='<div class="empty rep-empty"><b>موردی پیدا نشد</b>فیلتر یا عبارت جستجو را تغییر بده.</div>';return}
++ for(const n of items){
++  const nodeId=n.node_id||n.id||null;
++  const repRaw=String(n.representative_id||nodeId||'');
++  const web=n.web_login||{}, tok=n.token||{}, lic=n.license||{};
++  const rt=n.runtime||{}, pr=rt.panel_runtime||{}, wr=rt.wireguard||{};
++  const name=n.name||n.hostname||'نماینده';
++  const avatar=esc(String(name).trim().charAt(0).toUpperCase()||'G');
++  const cardClass=ganjStatusClass(n);
++  const statusBad=['revoked','expired','quota_exceeded','ip_mismatch','identity_mismatch'].includes(n.status);
++  const nodeStatus=!nodeId?'<span class="tag warn">در انتظار نصب</span>':(n.panel_connected?'<span class="tag good">ONLINE</span>':'<span class="tag bad">OFFLINE</span>');
++  const stateTag=n.status&&n.status!=='online'?'<span class="tag '+(statusBad?'bad':'warn')+'">'+esc(n.status)+'</span>':'';
++  const serviceState=pr.active===true?'<span class="tag good">RUNNING</span>':(pr.active===false?'<span class="tag bad">STOPPED</span>':'<span class="tag">—</span>');
++  const wgState=wr.up===true?'<span class="tag good">WG UP</span>':(wr.up===false?'<span class="tag bad">WG DOWN</span>':'<span class="tag">WG —</span>');
++  const gwState=wr.gateway_reachable===true?'OK':(wr.gateway_reachable===false?'UNREACHABLE':'—');
++  const seen=n.last_seen_at?new Date(n.last_seen_at).toLocaleString('fa-IR'):'هنوز متصل نشده';
++  const tokExp=tok.expires_at?new Date(tok.expires_at).toLocaleString('fa-IR'):'—';
++  const tokMap={pending:'آماده فعال‌سازی',used:'مصرف‌شده',expired:'منقضی',revoked:'لغوشده',legacy:'قدیمی'};
++  const tokText=tokMap[tok.status]||tok.status||'—';
++  const lexp=lic.expires_at?new Date(lic.expires_at).toLocaleString('fa-IR'):'نامحدود';
++  const used=Number(lic.traffic_used_bytes||0)/(1024**3), lim=lic.traffic_limit_bytes==null?null:Number(lic.traffic_limit_bytes)/(1024**3);
++  const pct=lim&&lim>0?Math.min(100,(used/lim)*100):0;
++  const licReasonMap={expired:'منقضی',quota_exceeded:'اتمام حجم',revoked:'لغوشده',pending_enrollment:'منتظر فعال‌سازی'};
++  const licText=lic.active?'فعال':(!nodeId?'محفوظ':(licReasonMap[lic.reason]||lic.reason||'غیرفعال'));
++  const licClass=lic.active?'good':(!nodeId?'warn':'bad');
++  const opts='<option value="">Automatic</option>'+GANJ_LOCS.map(x=>'<option value="'+esc(x.country_code)+'" '+(n.desired_location===x.country_code?'selected':'')+'>'+esc(x.flag||'')+' '+esc(x.name)+' · :'+x.internal_port+'</option>').join('');
++  const webState=web.configured?'<span class="tag good">فعال</span>':'<span class="tag warn">تنظیم نشده</span>';
++  const pendingBox=!nodeId?'<div class="rep-pending-box"><small>این نماینده هنوز Agent را نصب نکرده است.</small><div class="rep-token-meta"><span>Token #'+esc(tok.id||'—')+'</span><span>'+esc(tokText)+'</span><span>انقضا: '+esc(tokExp)+'</span></div></div>':'';
++  const locBlock=nodeId?'<div class="rep-location-row"><select id="nodeLoc-'+esc(nodeId)+'">'+opts+'</select><button class="btn small node-apply">اعمال</button></div><div class="rep-applied"><span>Applied</span><b>'+esc(n.applied_location||'Automatic / —')+'</b></div>':'<div class="rep-data-line"><span>پس از نصب Agent</span><b>Automatic</b></div>';
++  const mainActions=nodeId?'<div class="rep-actions-main"><button class="btn small node-install">Sync Locations</button><button class="btn small node-diag">Diagnostics</button><button class="btn small node-wg">Restart WG</button><button class="btn small node-renew">تمدید</button></div>':'<div class="rep-actions-main"><button class="btn small node-web-login">تنظیم ورود وب</button></div>';
++  const dangerActions=nodeId?'<div class="rep-actions-danger"><button class="btn small node-rotate">تعویض سرور/IP</button><button class="btn small danger node-revoke">لغو دسترسی</button></div>':(tok.id&&tok.status==='pending'?'<div class="rep-actions-danger"><button class="btn small danger token-revoke">لغو توکن</button></div>':'');
++
++  const card=document.createElement('article');
++  card.className='rep-card '+cardClass;
++  card.innerHTML=
++   '<div class="rep-card-head"><div class="rep-identity"><div class="rep-avatar">'+avatar+'</div><div class="rep-name"><b>'+esc(name)+'</b><small>'+esc(repRaw.slice(0,18))+(n.agent_version?' · Agent '+esc(n.agent_version):'')+'</small></div></div><div class="rep-head-state">'+nodeStatus+stateTag+'</div></div>'+
++   '<div class="rep-blocks">'+
++    '<div class="rep-block"><div class="rep-block-head"><span>Panel / Tunnel</span>'+serviceState+'</div><div class="rep-data"><div class="rep-data-line"><span>Panel</span><b>'+esc(n.panel_name||n.panel_type||'—')+'</b></div><div class="rep-data-line"><span>WireGuard</span><b>'+wgState+'</b></div><div class="rep-data-line"><span>Gateway</span><b>'+esc(gwState)+'</b></div><div class="rep-data-line"><span>IP Lock</span><code>'+esc(n.bound_ip||tok.bound_ip||'—')+'</code></div></div></div>'+
++    '<div class="rep-block"><div class="rep-block-head"><span>Web Login</span>'+webState+'</div><div class="rep-data"><div class="rep-data-line"><span>Username</span><b class="rep-web-user">'+esc(web.username||'—')+'</b></div><div class="rep-data-line"><span>Panel</span><b>'+(web.configured?'آماده ورود':'نیاز به تنظیم')+'</b></div></div><button class="btn small node-web-login" style="margin-top:9px;width:100%">'+(web.configured?'تغییر ورود':'تنظیم ورود')+'</button></div>'+
++    '<div class="rep-block"><div class="rep-block-head"><span>License / Traffic</span><span class="tag '+licClass+'">'+esc(licText)+'</span></div><div class="rep-license-line"><small>انقضا</small><b style="font-size:9px">'+esc(lexp)+'</b></div><div class="rep-traffic"><i style="width:'+pct.toFixed(1)+'%"></i></div><div class="rep-traffic-meta"><span>'+used.toFixed(2)+' GB</span><span>'+(lim==null?'∞':lim.toFixed(1)+' GB')+'</span></div></div>'+
++    '<div class="rep-block"><div class="rep-block-head"><span>Location</span><b>'+esc(n.desired_location||'Automatic')+'</b></div>'+locBlock+'</div>'+
++   '</div>'+
++   pendingBox+
++   '<div class="rep-last-seen">آخرین ارتباط: '+esc(seen)+(n.last_error?' · <span class="err">'+esc(n.last_error)+'</span>':'')+'</div>'+
++   '<div class="rep-actions">'+mainActions+dangerActions+'</div>';
++  root.appendChild(card);
++
++  card.querySelectorAll('.node-web-login').forEach(b=>b.onclick=()=>setGanjWebLogin(repRaw,web.username||''));
++  if(nodeId){
++   card.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(nodeId);
++   card.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(nodeId,'locations_install');
++   card.querySelector('.node-diag').onclick=()=>sendGanjNodeCommand(nodeId,'diagnostics');
++   card.querySelector('.node-wg').onclick=()=>sendGanjNodeCommand(nodeId,'wg_restart');
++   card.querySelector('.node-renew').onclick=()=>renewGanjNode(nodeId);
++   card.querySelector('.node-rotate').onclick=()=>rotateGanjNode(nodeId,n.name||n.hostname||'نماینده');
++   card.querySelector('.node-revoke').onclick=()=>revokeGanjNode(nodeId);
++  }else if(tok.id&&tok.status==='pending'){
++   card.querySelector('.token-revoke').onclick=()=>revokeGanjToken(tok.id);
++  }
++ }
++}
+ async function loadGanjNodes(){
+  try{
+   const [d,l]=await Promise.all([req('/admin/ganj/representatives'),req('/admin/locations')]);
+   GANJ_LOCS=(l.items||[]).filter(x=>x.enabled);
+-  const items=d.items||[];
+-  const root=document.getElementById('ganjNodeRows');root.innerHTML='';
+-  setText('ganjNodeCount',items.length+' نماینده');
+-  setText('ganjRepTotal',items.length);
+-  setText('ganjRepOnline',items.filter(x=>x.panel_connected).length);
+-  setText('ganjTokenPending',items.filter(x=>(x.token||{}).status==='pending').length);
+-  const totalUsed=items.reduce((sum,x)=>sum+Number((x.license||{}).traffic_used_bytes||0),0)/(1024**3);
++  GANJ_NODES=d.items||[];
++  setText('ganjRepTotal',GANJ_NODES.length);
++  setText('ganjRepOnline',GANJ_NODES.filter(x=>x.panel_connected).length);
++  setText('ganjTokenPending',GANJ_NODES.filter(x=>(x.token||{}).status==='pending').length);
++  const totalUsed=GANJ_NODES.reduce((sum,x)=>sum+Number((x.license||{}).traffic_used_bytes||0),0)/(1024**3);
+   setText('ganjRepTraffic',totalUsed.toFixed(2)+' GB');
+-  if(!items.length){root.innerHTML='<tr><td colspan="11"><div class="empty">هنوز نماینده‌ای ساخته نشده</div></td></tr>';return}
+-  for(const n of items){
+-   const nodeId=n.node_id||n.id||null;
+-   const opts='<option value="">Automatic</option>'+GANJ_LOCS.map(x=>'<option value="'+esc(x.country_code)+'" '+(n.desired_location===x.country_code?'selected':'')+'>'+esc(x.flag||'')+' '+esc(x.name)+' · :'+x.internal_port+'</option>').join('');
+-   const cls=n.status==='online'?'good':(['revoked','expired','quota_exceeded','ip_mismatch','identity_mismatch'].includes(n.status)?'bad':'warn');
+-   const rt=n.runtime||{}, pr=rt.panel_runtime||{}, wr=rt.wireguard||{};
+-   const panelLive=n.panel_connected?'<span class="tag good">ONLINE</span>':(nodeId?'<span class="tag bad">OFFLINE</span>':'<span class="tag warn">NOT CONNECTED</span>');
+-   const serviceLive=pr.active===true?'<span class="tag good">RUNNING</span>':(pr.active===false?'<span class="tag bad">STOPPED</span>':'');
+-   const wgLive=wr.up===true?'<span class="tag good">WG UP</span>':(wr.up===false?'<span class="tag bad">WG DOWN</span>':'');
+-   const gwLive=wr.gateway_reachable===true?'<span class="tag good">GW OK</span>':(wr.gateway_reachable===false?'<span class="tag warn">GW ?</span>':'');
+-   const seen=n.last_seen_at?new Date(n.last_seen_at).toLocaleString('fa-IR'):'—';
+-   const tok=n.token||{}; const tokExp=tok.expires_at?new Date(tok.expires_at).toLocaleString('fa-IR'):'—';
+-   const tokMap={pending:'آماده فعال‌سازی',used:'فعال‌شده / مصرف‌شده',expired:'منقضی',revoked:'لغوشده / سوخته',legacy:'قدیمی'};
+-   const tokCls=tok.status==='used'?'good':(['expired','revoked'].includes(tok.status)?'bad':'warn');
+-   const tokText=tokMap[tok.status]||tok.status||'—';
+-   const lic=n.license||{}; const lexp=lic.expires_at?new Date(lic.expires_at).toLocaleString('fa-IR'):'∞';
+-   const used=Number(lic.traffic_used_bytes||0)/(1024**3), lim=lic.traffic_limit_bytes==null?null:Number(lic.traffic_limit_bytes)/(1024**3);
+-   const pct=lim&&lim>0?Math.min(100,(used/lim)*100):0;
+-   const traffic=used.toFixed(2)+' / '+(lim==null?'∞':lim.toFixed(1))+' GB';
+-   const pending=!nodeId;
+-   const licReasonMap={expired:'منقضی',quota_exceeded:'اتمام حجم',revoked:'لغوشده',pending_enrollment:'منتظر فعال‌سازی'};
+-   const licCls=lic.active?'good':(pending?'warn':'bad');
+-   const licText=lic.active?('اشتراک فعال · '+lexp):(pending?('اشتراک محفوظ · '+(lexp==='∞'?((tok.license_days??lic.license_days??0)+' روز پس از فعال‌سازی'):lexp)):esc(licReasonMap[lic.reason]||lic.reason||'غیرفعال'));
 -   const repId=esc(n.representative_id||nodeId||'');
-+   const repRaw=String(n.representative_id||nodeId||'');
-+   const repId=esc(repRaw);
-+   const web=n.web_login||{};
-+   const webLogin='<span class="tag '+(web.configured?'good':'warn')+'">'+(web.configured?'فعال':'تنظیم نشده')+'</span><br><small style="color:var(--muted)">'+esc(web.username||'—')+'</small><br><button class="btn small node-web-login">'+(web.configured?'تغییر ورود':'تنظیم ورود')+'</button>';
-    const actions=nodeId?'<div class="actions"><button class="btn small node-apply">Location</button><button class="btn small node-install">Install</button><button class="btn small node-diag">Diag</button><button class="btn small node-wg">WG</button><button class="btn small node-renew">تمدید</button><button class="btn small node-rotate">تعویض سرور/IP</button><button class="btn small danger node-revoke">لغو دسترسی</button></div>':(tok.id&&tok.status==='pending'?'<div class="actions"><span class="tag warn">منتظر نصب Agent</span><button class="btn small danger token-revoke">لغو توکن</button></div>':'<span class="tag bad">'+esc(tokText)+'</span>');
-    const desired=nodeId?'<select class="input" id="nodeLoc-'+esc(nodeId)+'">'+opts+'</select>':'—';
-    const tr=document.createElement('tr');
-    tr.innerHTML='<td><b>'+esc(n.name||n.hostname||'نماینده')+'</b><br><small style="color:var(--muted)">'+repId.slice(0,18)+(n.agent_version?' · v'+esc(n.agent_version):'')+'</small></td>'
-     +'<td>'+panelLive+'<br><small style="color:var(--muted)">'+esc(n.panel_name||n.panel_type||'—')+'</small> '+serviceLive+'<br><small style="color:var(--muted)">IP قفل‌شده: <code>'+esc(n.bound_ip||tok.bound_ip||'—')+'</code></small></td>'
-+    +'<td>'+webLogin+'</td>'
-     +'<td><span class="tag '+tokCls+'">'+esc(tokText)+'</span><br><small style="color:var(--muted)">انقضای توکن: '+esc(tokExp)+'</small><br><small style="color:var(--muted)">Token #'+esc(tok.id||'—')+'</small></td>'
-     +'<td><span class="tag '+cls+'">'+esc(n.status||'—')+'</span>'+(n.last_error?'<br><small class="err">'+esc(n.last_error)+'</small>':'')+'</td>'
-     +'<td><span class="tag '+licCls+'">'+licText+'</span></td>'
-@@ -614,6 +621,8 @@
-     +'<td><code>'+esc(n.wg_address||'—')+'</code><br>'+wgLive+' '+gwLive+'</td>'
-     +'<td>'+desired+'</td><td>'+esc(n.applied_location||'—')+'</td><td>'+esc(seen)+'</td><td>'+actions+'</td>';
-    root.appendChild(tr);
-+   const webBtn=tr.querySelector('.node-web-login');
-+   if(webBtn)webBtn.onclick=()=>setGanjWebLogin(repRaw,web.username||'');
-    if(nodeId){
-     tr.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(nodeId);
-     tr.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(nodeId,'locations_install');
-@@ -634,7 +643,11 @@
+-   const actions=nodeId?'<div class="actions"><button class="btn small node-apply">Location</button><button class="btn small node-install">Install</button><button class="btn small node-diag">Diag</button><button class="btn small node-wg">WG</button><button class="btn small node-renew">تمدید</button><button class="btn small node-rotate">تعویض سرور/IP</button><button class="btn small danger node-revoke">لغو دسترسی</button></div>':(tok.id&&tok.status==='pending'?'<div class="actions"><span class="tag warn">منتظر نصب Agent</span><button class="btn small danger token-revoke">لغو توکن</button></div>':'<span class="tag bad">'+esc(tokText)+'</span>');
+-   const desired=nodeId?'<select class="input" id="nodeLoc-'+esc(nodeId)+'">'+opts+'</select>':'—';
+-   const tr=document.createElement('tr');
+-   tr.innerHTML='<td><b>'+esc(n.name||n.hostname||'نماینده')+'</b><br><small style="color:var(--muted)">'+repId.slice(0,18)+(n.agent_version?' · v'+esc(n.agent_version):'')+'</small></td>'
+-    +'<td>'+panelLive+'<br><small style="color:var(--muted)">'+esc(n.panel_name||n.panel_type||'—')+'</small> '+serviceLive+'<br><small style="color:var(--muted)">IP قفل‌شده: <code>'+esc(n.bound_ip||tok.bound_ip||'—')+'</code></small></td>'
+-    +'<td><span class="tag '+tokCls+'">'+esc(tokText)+'</span><br><small style="color:var(--muted)">انقضای توکن: '+esc(tokExp)+'</small><br><small style="color:var(--muted)">Token #'+esc(tok.id||'—')+'</small></td>'
+-    +'<td><span class="tag '+cls+'">'+esc(n.status||'—')+'</span>'+(n.last_error?'<br><small class="err">'+esc(n.last_error)+'</small>':'')+'</td>'
+-    +'<td><span class="tag '+licCls+'">'+licText+'</span></td>'
+-    +'<td><span class="latency">'+esc(traffic)+'</span><div class="bar" style="height:4px;margin-top:6px;background:#1e2630;border-radius:999px;overflow:hidden"><i style="display:block;height:100%;width:'+pct.toFixed(1)+'%;background:linear-gradient(90deg,var(--accent),var(--cyan))"></i></div></td>'
+-    +'<td><code>'+esc(n.wg_address||'—')+'</code><br>'+wgLive+' '+gwLive+'</td>'
+-    +'<td>'+desired+'</td><td>'+esc(n.applied_location||'—')+'</td><td>'+esc(seen)+'</td><td>'+actions+'</td>';
+-   root.appendChild(tr);
+-   if(nodeId){
+-    tr.querySelector('.node-apply').onclick=()=>setGanjNodeLocation(nodeId);
+-    tr.querySelector('.node-install').onclick=()=>sendGanjNodeCommand(nodeId,'locations_install');
+-    tr.querySelector('.node-diag').onclick=()=>sendGanjNodeCommand(nodeId,'diagnostics');
+-    tr.querySelector('.node-wg').onclick=()=>sendGanjNodeCommand(nodeId,'wg_restart');
+-    tr.querySelector('.node-renew').onclick=()=>renewGanjNode(nodeId);
+-    tr.querySelector('.node-rotate').onclick=()=>rotateGanjNode(nodeId,n.name||n.hostname||'نماینده');
+-    tr.querySelector('.node-revoke').onclick=()=>revokeGanjNode(nodeId);
+-   }else if(tok.id&&tok.status==='pending'){
+-    tr.querySelector('.token-revoke').onclick=()=>revokeGanjToken(tok.id);
+-   }
+-  }
++  renderGanjNodes();
+  }catch(e){toast(e.message,true)}
+ }
+ async function createGanjToken(){
+@@ -634,7 +757,11 @@
    const ttl=Number(document.getElementById('ganjTokenTtl').value||30);
    const license_days=Number(document.getElementById('ganjLicenseDays').value||0);
    const tv=document.getElementById('ganjTrafficLimit').value.trim(); const traffic_limit_gb=tv?Number(tv):null;
@@ -356,7 +634,7 @@
    document.getElementById('ganjTokenValue').textContent=d.token;
    document.getElementById('ganjTokenBox').style.display='block';
    toast('نماینده ساخته شد و توکن یک‌بارمصرف صادر شد');
-@@ -642,6 +655,32 @@
+@@ -642,6 +769,32 @@
   }catch(e){toast(e.message,true)}
  }
  async function copyGanjToken(){const v=document.getElementById('ganjTokenValue').textContent;try{await navigator.clipboard.writeText(v);toast('کپی شد')}catch{toast('کپی ناموفق',true)}}
@@ -389,7 +667,7 @@
  async function setGanjNodeLocation(id){
   try{const v=document.getElementById('nodeLoc-'+id).value||null;await req('/admin/ganj/nodes/'+id+'/location',{method:'POST',body:JSON.stringify({country_code:v})});toast('Desired state بروزرسانی شد');await loadGanjNodes()}catch(e){toast(e.message,true)}
  }
-@@ -678,6 +717,7 @@
+@@ -678,6 +831,7 @@
  }
  async function refreshAll(){await Promise.all([loadOverview(),loadSummary()])}
  document.getElementById('dialogsModal').addEventListener('click',e=>{if(e.target.id==='dialogsModal')closeModal()});
