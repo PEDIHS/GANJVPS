@@ -34,9 +34,9 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 
-ETC_DIR = Path("/etc/ganj-vps")
+INSTALL_DIR = Path(__file__).resolve().parent\nETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
 RUN_DIR = Path("/run/ganj-vps")
 CONFIG_FILE = ETC_DIR / "agent.json"
