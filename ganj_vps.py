@@ -34,7 +34,7 @@ from panel_sync import (
 )
 
 APP_NAME = "GANJ VPS"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 ETC_DIR = Path("/etc/ganj-vps")
 STATE_DIR = Path("/var/lib/ganj-vps")
@@ -2199,6 +2199,13 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--force", action="store_true")
     wu = sub.add_parser("web-user")
     wu.add_argument("--username", required=True)
+    wp = sub.add_parser("web-publish")
+    wp.add_argument("--domain", required=True)
+    wp.add_argument("--auto-cert", action="store_true")
+    wp.add_argument("--cert")
+    wp.add_argument("--key")
+    sub.add_parser("web-unpublish")
+    sub.add_parser("web-cert-refresh")
     sub.add_parser("web-status")
     return p
 
@@ -2268,16 +2275,58 @@ def main() -> int:
                 subprocess.run(["systemctl", "enable", "--now", "ganj-vps-web.service"], check=False)
                 subprocess.run(["systemctl", "restart", "ganj-vps-web.service"], check=False)
             return int(p.returncode)
-        if args.cmd == "web-status":
-            print(json.dumps({
-                "service": _service_state("ganj-vps-web.service") if "_service_state" in globals() else subprocess.run(
-                    ["systemctl", "is-active", "ganj-vps-web.service"],
-                    capture_output=True,
-                    text=True,
-                ).stdout.strip(),
-                "bind": "127.0.0.1:9877",
-                "auth_configured": Path("/etc/ganj-vps/web-auth.json").exists(),
-            }, ensure_ascii=False, indent=2))
+        if args.cmd in {"web-publish", "web-unpublish", "web-cert-refresh", "web-status"}:
+            helper = [
+                str(INSTALL_DIR / "venv" / "bin" / "python"),
+                str(INSTALL_DIR / "web_publish.py"),
+            ]
+            if args.cmd == "web-publish":
+                helper += ["configure", "--domain", args.domain]
+                if args.auto_cert:
+                    if not shutil.which("certbot"):
+                        apt = subprocess.run(
+                            ["apt-get", "install", "-y", "certbot"],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if apt.returncode != 0:
+                            raise RuntimeError(
+                                "certbot_install_failed:"
+                                + (apt.stderr or apt.stdout or "")[-500:]
+                            )
+                    subprocess.run(
+                        ["systemctl", "enable", "--now", "certbot.timer"],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    helper.append("--auto-cert")
+                else:
+                    helper.append("--existing-cert")
+                    if args.cert:
+                        helper += ["--cert", args.cert]
+                    if args.key:
+                        helper += ["--key", args.key]
+            elif args.cmd == "web-unpublish":
+                helper.append("remove")
+            elif args.cmd == "web-cert-refresh":
+                helper.append("refresh")
+            else:
+                helper.append("status")
+
+            p = subprocess.run(helper, capture_output=True, text=True)
+            if p.returncode != 0:
+                detail = (p.stderr or p.stdout or "").strip()
+                raise RuntimeError(detail or "web_publish_failed")
+            if args.cmd == "web-status":
+                try:
+                    data = json.loads(p.stdout or "{}")
+                except Exception:
+                    data = {"raw": (p.stdout or "").strip()}
+                data["auth_configured"] = Path("/etc/ganj-vps/web-auth.json").exists()
+                print(json.dumps(data, ensure_ascii=False, indent=2))
+            else:
+                print((p.stdout or "").strip())
             return 0
         if args.cmd == "update":
             return update_self()

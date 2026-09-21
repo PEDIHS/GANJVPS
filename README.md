@@ -1,6 +1,6 @@
 # GANJ VPS
 
-GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.5.0**.
+GANJ VPS is the clean-room node installer and managed-node control agent for the GANJ gateway platform. Current agent version: **0.5.1**.
 
 It is designed for servers running supported Xray panels such as Sanaei 3x-ui and PasarGuard, and connects them to a GANJ central gateway through a managed WireGuard control/data plane.
 
@@ -125,4 +125,51 @@ The service can be checked with:
 ```bash
 ganj-vps web-status
 systemctl status ganj-vps-web
+```
+
+
+## Web domain + automatic HTTPS
+
+During an interactive install, GANJ now asks for the representative Web Panel
+domain or subdomain. Leaving it blank keeps the dashboard local-only.
+
+For a configured domain, the installer asks whether an existing TLS certificate
+should be used. Existing Let's Encrypt paths are auto-detected when available;
+otherwise custom fullchain/private-key paths can be supplied.
+
+If GANJ should create the certificate, it installs Certbot and uses a generated
+non-identifying email address. HAProxy serves the public HTTP-01 challenge on
+port 80 and forwards only `/.well-known/acme-challenge/` to a temporary
+loopback Certbot listener. Other HTTP traffic is redirected to HTTPS.
+
+The existing public HAProxy `:443` listener remains the single entry point.
+GANJ adds an SNI route for the Web Panel domain to a dedicated local TLS
+terminator on `127.0.0.1:9878`, which reverse-proxies the dashboard to
+`127.0.0.1:9877`. Existing PasarGuard/Reality SNI routes are preserved.
+
+Published routes include:
+
+- `/` — responsive representative dashboard
+- `/api/*` — authenticated local management API
+- `/api/events` — live SSE status stream
+- `/healthz` — minimal health endpoint used by HAProxy
+
+Automatic Certbot renewal is compatible with the always-on HAProxy frontend:
+renewals listen only on `127.0.0.1:9880`, while HAProxy forwards the public
+HTTP-01 request from port 80. A deploy hook rebuilds the HAProxy PEM and reloads
+HAProxy after successful renewal, so port 443 does not need to be stopped.
+
+Manual CLI examples:
+
+```bash
+ganj-vps web-publish --domain rep.example.com --auto-cert
+
+ganj-vps web-publish \
+  --domain rep.example.com \
+  --cert /path/fullchain.pem \
+  --key /path/privkey.pem
+
+ganj-vps web-status
+ganj-vps web-cert-refresh
+ganj-vps web-unpublish
 ```
