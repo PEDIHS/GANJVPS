@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07130f">
+<title>GANJ VPS</title>
+<style>
+:root{
+  --bg:#050b09;--bg2:#07130f;--panel:#0b1713;--panel2:#0f201a;--line:#19372d;
+  --text:#edfdf5;--muted:#87a99a;--emerald:#10b981;--emerald2:#34d399;
+  --gold:#f5be40;--gold2:#ffd760;--red:#f87171;--orange:#fb923c;
+  --shadow:0 16px 48px rgba(0,0,0,.32);--radius:22px
+}
+*{box-sizing:border-box}html,body{margin:0;background:
+radial-gradient(circle at 85% -10%,rgba(16,185,129,.13),transparent 34rem),
+radial-gradient(circle at 10% 10%,rgba(245,190,64,.08),transparent 28rem),
+var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif}
+body{min-height:100vh}.hidden{display:none!important}button,input{font:inherit}
+.shell{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;padding:24px 18px;border-left:1px solid var(--line);
+background:rgba(5,11,9,.82);backdrop-filter:blur(18px)}
+.brand{display:flex;align-items:center;gap:12px;margin:4px 8px 28px}
+.logo{width:46px;height:46px;border-radius:15px;display:grid;place-items:center;font-weight:900;
+color:#07130f;background:linear-gradient(145deg,var(--gold2),var(--emerald2));box-shadow:0 0 38px rgba(16,185,129,.17)}
+.brand h1{font-size:18px;margin:0;letter-spacing:.6px}.brand small{display:block;color:var(--muted);margin-top:3px}
+.nav{display:grid;gap:7px}.nav button{border:0;background:transparent;color:var(--muted);padding:13px 14px;
+border-radius:14px;text-align:right;cursor:pointer;display:flex;gap:10px;align-items:center;transition:.2s}
+.nav button:hover,.nav button.active{background:linear-gradient(90deg,rgba(16,185,129,.14),rgba(245,190,64,.07));color:var(--text)}
+.nav .dot{width:8px;height:8px;border-radius:99px;background:currentColor;opacity:.7}
+.sidebar-foot{position:absolute;bottom:22px;right:18px;left:18px;padding:14px;border:1px solid var(--line);
+border-radius:16px;color:var(--muted);font-size:12px;background:rgba(15,32,26,.55)}
+.main{padding:24px 28px 90px;min-width:0}.topbar{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:22px}
+.title h2{font-size:25px;margin:0}.title p{margin:5px 0 0;color:var(--muted);font-size:13px}
+.top-actions{display:flex;gap:9px;align-items:center}.pill{border:1px solid var(--line);background:rgba(15,32,26,.72);
+padding:9px 12px;border-radius:999px;font-size:12px;color:var(--muted)}
+.pill.online{color:var(--emerald2);border-color:rgba(52,211,153,.35)}
+.icon-btn,.btn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:13px;padding:10px 13px;cursor:pointer}
+.btn.primary{border-color:rgba(16,185,129,.4);background:linear-gradient(145deg,rgba(16,185,129,.18),rgba(16,185,129,.07))}
+.btn.gold{border-color:rgba(245,190,64,.4);background:linear-gradient(145deg,rgba(245,190,64,.16),rgba(245,190,64,.05))}
+.btn.danger{border-color:rgba(248,113,113,.32);color:#fecaca;background:rgba(248,113,113,.08)}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:15px}.card{background:linear-gradient(160deg,rgba(15,32,26,.94),rgba(7,19,15,.94));
+border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);min-width:0}
+.span-3{grid-column:span 3}.span-4{grid-column:span 4}.span-5{grid-column:span 5}.span-6{grid-column:span 6}.span-7{grid-column:span 7}.span-8{grid-column:span 8}.span-12{grid-column:span 12}
+.kpi-label{font-size:12px;color:var(--muted);margin-bottom:10px}.kpi-value{font-size:26px;font-weight:800;letter-spacing:-.4px}
+.kpi-sub{font-size:12px;color:var(--muted);margin-top:7px}.accent{color:var(--emerald2)}.gold{color:var(--gold2)}
+.progress{height:8px;background:#09110e;border-radius:99px;overflow:hidden;margin:12px 0 2px;border:1px solid #13261f}
+.progress>i{display:block;height:100%;background:linear-gradient(90deg,var(--emerald),var(--gold));border-radius:99px}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.card-head h3{font-size:15px;margin:0}
+.badge{padding:5px 9px;border-radius:99px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
+.badge.on{color:var(--emerald2);background:rgba(16,185,129,.08);border-color:rgba(16,185,129,.28)}
+.badge.warn{color:var(--gold2);background:rgba(245,190,64,.08);border-color:rgba(245,190,64,.28)}
+.badge.off{color:#fda4af;background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.28)}
+.metric-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid rgba(25,55,45,.55)}
+.metric-row:last-child{border-bottom:0}.metric-row span:first-child{color:var(--muted);font-size:12px}.metric-row b{font-size:13px;overflow-wrap:anywhere}
+canvas{width:100%;height:110px;display:block}.locations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.loc{border:1px solid var(--line);border-radius:16px;padding:12px;background:rgba(5,11,9,.35);display:grid;gap:8px}
+.loc-top{display:flex;justify-content:space-between;gap:8px;align-items:center}.loc-name{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.loc-meta{display:flex;gap:12px;color:var(--muted);font-size:11px;direction:ltr;justify-content:flex-end}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:6px}.s-online{background:var(--emerald2);box-shadow:0 0 12px rgba(52,211,153,.7)}
+.s-degraded{background:var(--gold2)}.s-offline{background:var(--red)}.s-no_upstream,.s-checking{background:#52665e}
+.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:16px}table{width:100%;border-collapse:collapse;min-width:650px}
+th,td{padding:12px 13px;text-align:right;border-bottom:1px solid rgba(25,55,45,.7);font-size:12px}th{color:var(--muted);font-weight:600;background:#08110e;position:sticky;top:0}
+tr:last-child td{border-bottom:0}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.field{background:#06100c;border:1px solid var(--line);border-radius:13px;color:var(--text);padding:10px 12px;outline:none;min-width:0}
+.field:focus{border-color:rgba(52,211,153,.55)}.form-row{display:grid;grid-template-columns:1fr 1fr auto;gap:9px}
+.pre{direction:ltr;text-align:left;white-space:pre-wrap;word-break:break-word;background:#050b09;border:1px solid var(--line);
+padding:14px;border-radius:15px;max-height:360px;overflow:auto;color:#b7d8ca;font:12px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace}
+.toast{position:fixed;left:22px;bottom:22px;z-index:50;background:#10231c;border:1px solid var(--line);padding:12px 16px;border-radius:14px;box-shadow:var(--shadow);max-width:min(380px,90vw);font-size:13px}
+.toast.err{border-color:rgba(248,113,113,.4);color:#fecaca}
+.bottom-nav{display:none}.page{display:none}.page.active{display:block}
+.login-wrap{min-height:100vh;display:grid;place-items:center;padding:22px}.login{width:min(420px,100%);padding:28px;background:rgba(11,23,19,.96);border:1px solid var(--line);border-radius:28px;box-shadow:var(--shadow)}
+.login .brand{margin:0 0 24px}.login h2{margin:0 0 6px}.login p{color:var(--muted);font-size:13px;margin:0 0 20px}
+.login form{display:grid;gap:11px}.login .field{width:100%;padding:13px}.login .btn{padding:13px;font-weight:700}
+.small{font-size:11px;color:var(--muted)}.ltr{direction:ltr;text-align:left}.section-note{color:var(--muted);font-size:12px;margin:-5px 0 14px}
+@media(max-width:1100px){.span-3{grid-column:span 6}.span-4{grid-column:span 6}.span-5,.span-7{grid-column:span 12}.span-8{grid-column:span 12}}
+@media(max-width:760px){
+ .shell{display:block}.sidebar{display:none}.main{padding:18px 14px 92px}.topbar{align-items:flex-start}.title h2{font-size:21px}
+ .top-actions .pill{display:none}.grid{gap:11px}.span-3,.span-4,.span-5,.span-6,.span-7,.span-8,.span-12{grid-column:span 12}
+ .locations{grid-template-columns:1fr}.card{border-radius:18px;padding:15px}.kpi-value{font-size:23px}.form-row{grid-template-columns:1fr}
+ .bottom-nav{display:grid;position:fixed;bottom:0;right:0;left:0;z-index:40;grid-template-columns:repeat(5,1fr);
+   background:rgba(5,11,9,.93);backdrop-filter:blur(18px);border-top:1px solid var(--line);padding:8px 8px max(8px,env(safe-area-inset-bottom))}
+ .bottom-nav button{border:0;background:transparent;color:var(--muted);font-size:10px;padding:7px 2px;display:grid;gap:4px;place-items:center}
+ .bottom-nav button.active{color:var(--emerald2)}.bottom-nav strong{font-size:16px;line-height:1}
+ .toast{left:12px;right:12px;bottom:82px;max-width:none}
+}
+</style>
+</head>
+<body>
+<div id="loginView" class="login-wrap">
+  <div class="login">
+    <div class="brand"><div class="logo">G</div><div><h1>GANJ VPS</h1><small>Representative Control</small></div></div>
+    <h2>ورود به پنل نماینده</h2>
+    <p>مدیریت لوکیشن‌ها، مصرف ترافیک، PasarGuard و Gateway از روی همین سرور.</p>
+    <form id="loginForm">
+      <input class="field" id="username" autocomplete="username" placeholder="نام کاربری" required>
+      <input class="field" id="password" type="password" autocomplete="current-password" placeholder="رمز عبور" required>
+      <button class="btn primary" type="submit">ورود امن</button>
+    </form>
+    <div id="loginError" class="small" style="margin-top:12px;color:#fda4af"></div>
+  </div>
+</div>
+
+<div id="appView" class="shell hidden">
+  <aside class="sidebar">
+    <div class="brand"><div class="logo">G</div><div><h1>GANJ VPS</h1><small id="sideVersion">Node Panel</small></div></div>
+    <nav class="nav" id="nav">
+      <button data-page="dashboard" class="active"><span class="dot"></span>داشبورد</button>
+      <button data-page="locations"><span class="dot"></span>لوکیشن‌ها</button>
+      <button data-page="panel"><span class="dot"></span>PasarGuard</button>
+      <button data-page="gateways"><span class="dot"></span>Gatewayها</button>
+      <button data-page="tools"><span class="dot"></span>ابزارها</button>
+    </nav>
+    <div class="sidebar-foot"><div>Node ID</div><b id="sideNode" class="ltr">—</b></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="title"><h2 id="pageTitle">داشبورد</h2><p id="subtitle">وضعیت زنده سرور نماینده</p></div>
+      <div class="top-actions">
+        <span id="livePill" class="pill">در حال اتصال...</span>
+        <button class="icon-btn" id="refreshBtn">↻</button>
+        <button class="icon-btn" id="logoutBtn">خروج</button>
+      </div>
+    </header>
+
+    <section id="page-dashboard" class="page active">
+      <div class="grid">
+        <article class="card span-3"><div class="kpi-label">مصرف ترافیک لایسنس</div><div id="trafficUsed" class="kpi-value gold">—</div><div class="progress"><i id="trafficBar" style="width:0"></i></div><div id="trafficLimit" class="kpi-sub">—</div></article>
+        <article class="card span-3"><div class="kpi-label">ترافیک لحظه‌ای</div><div id="liveTraffic" class="kpi-value accent">—</div><div id="liveTrafficSub" class="kpi-sub">—</div></article>
+        <article class="card span-3"><div class="kpi-label">اتصالات فعال</div><div id="connections" class="kpi-value">—</div><div class="kpi-sub">روی ۴۰ لوکیشن GANJ</div></article>
+        <article class="card span-3"><div class="kpi-label">Gateway فعلی</div><div id="gatewayPing" class="kpi-value">—</div><div id="gatewayName" class="kpi-sub">—</div></article>
+
+        <article class="card span-8">
+          <div class="card-head"><h3>ترافیک زنده</h3><span class="badge on">LIVE</span></div>
+          <canvas id="trafficChart" height="110"></canvas>
+          <div class="small" style="display:flex;gap:18px;direction:ltr"><span>↓ RX <b id="rxNow">0</b> Mbps</span><span>↑ TX <b id="txNow">0</b> Mbps</span></div>
+        </article>
+        <article class="card span-4">
+          <div class="card-head"><h3>منابع سرور</h3><span id="uptimeBadge" class="badge">—</span></div>
+          <div class="metric-row"><span>CPU</span><b id="cpu">—</b></div>
+          <div class="metric-row"><span>RAM</span><b id="ram">—</b></div>
+          <div class="metric-row"><span>Disk</span><b id="disk">—</b></div>
+          <div class="metric-row"><span>Load</span><b id="load">—</b></div>
+        </article>
+
+        <article class="card span-7">
+          <div class="card-head"><h3>Health لوکیشن‌ها</h3><button class="btn" data-action="health_refresh">Refresh Health</button></div>
+          <div id="healthSummary" class="toolbar"></div>
+          <div id="dashboardLocations" class="locations"></div>
+        </article>
+        <article class="card span-5">
+          <div class="card-head"><h3>وضعیت سرویس‌ها</h3><span id="agentBadge" class="badge">Agent</span></div>
+          <div class="metric-row"><span>GANJ Agent</span><b id="svcAgent">—</b></div>
+          <div class="metric-row"><span>Web Panel</span><b id="svcWeb">—</b></div>
+          <div class="metric-row"><span>HAProxy</span><b id="svcHaproxy">—</b></div>
+          <div class="metric-row"><span>WireGuard</span><b id="wgState">—</b></div>
+          <div class="metric-row"><span>WG Endpoint</span><b id="wgEndpoint" class="ltr">—</b></div>
+          <div class="metric-row"><span>آخرین Sync</span><b id="lastSync">—</b></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="page-locations" class="page">
+      <div class="toolbar">
+        <button class="btn primary" data-action="locations_install">Sync / Rebuild 40 Locations</button>
+        <button class="btn" data-action="health_refresh">Refresh Health</button>
+        <button class="btn danger" id="removeLocationsBtn">حذف Locationهای GANJ</button>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>۴۰ لوکیشن</h3><span id="locationsCounter" class="badge">—</span></div>
+        <div id="allLocations" class="locations"></div>
+      </div>
+    </section>
+
+    <section id="page-panel" class="page">
+      <div class="grid">
+        <article class="card span-4">
+          <div class="card-head"><h3>PasarGuard</h3><span id="panelBadge" class="badge">—</span></div>
+          <div id="panelMetrics"></div>
+        </article>
+        <article class="card span-8">
+          <div class="card-head"><h3>Template انتخاب‌شده</h3><span class="badge">Local-only credentials</span></div>
+          <div id="panelProfile"></div>
+        </article>
+        <article class="card span-12">
+          <div class="card-head"><h3>Inboundهای پنل</h3><button class="btn primary" data-action="locations_install">Rebuild GANJ</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Tag</th><th>Protocol</th><th>Listen</th><th>Port</th></tr></thead><tbody id="inboundsTable"></tbody></table></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="page-gateways" class="page">
+      <div class="toolbar"><button class="btn primary" id="bestGatewayBtn">انتخاب Best Ping</button></div>
+      <div class="card">
+        <div class="card-head"><h3>Gatewayها</h3><span id="gatewayCurrent" class="badge on">—</span></div>
+        <div id="gatewayList"></div>
+      </div>
+      <div class="card" style="margin-top:15px">
+        <div class="card-head"><h3>افزودن Gateway</h3></div>
+        <div class="form-row"><input id="gwName" class="field" placeholder="نام"><input id="gwEndpoint" class="field ltr" placeholder="host:port"><button id="addGatewayBtn" class="btn gold">افزودن</button></div>
+      </div>
+    </section>
+
+    <section id="page-tools" class="page">
+      <div class="grid">
+        <article class="card span-6">
+          <div class="card-head"><h3>عملیات</h3></div>
+          <div class="toolbar">
+            <button class="btn primary" data-action="sync">Sync Central</button>
+            <button class="btn primary" data-action="reconcile">Reconcile</button>
+            <button class="btn" data-action="restart_agent">Restart Agent</button>
+            <button class="btn" data-action="restart_haproxy">Reload HAProxy</button>
+            <button class="btn gold" data-action="update">Update GANJ</button>
+          </div>
+        </article>
+        <article class="card span-6">
+          <div class="card-head"><h3>Diagnostics</h3><button id="diagBtn" class="btn">اجرای بررسی</button></div>
+          <div id="diagResult" class="small">هنوز اجرا نشده.</div>
+        </article>
+        <article class="card span-12">
+          <div class="card-head"><h3>Agent Logs</h3><button id="logsBtn" class="btn">Refresh</button></div>
+          <pre id="logs" class="pre">—</pre>
+        </article>
+        <article class="card span-12" style="border-color:rgba(248,113,113,.25)">
+          <div class="card-head"><h3 style="color:#fecaca">Danger Zone</h3></div>
+          <p class="section-note">عملیات حذف نیاز به تأیید جداگانه دارد و shell آزاد از پنل قابل اجرا نیست.</p>
+          <button id="uninstallBtn" class="btn danger">Uninstall GANJ VPS</button>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" id="bottomNav">
+    <button data-page="dashboard" class="active"><strong>⌂</strong>خانه</button>
+    <button data-page="locations"><strong>◎</strong>لوکیشن</button>
+    <button data-page="panel"><strong>▣</strong>پنل</button>
+    <button data-page="gateways"><strong>◇</strong>Gateway</button>
+    <button data-page="tools"><strong>⚙</strong>ابزار</button>
+  </nav>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+let csrf="", liveSource=null, currentPage="dashboard", trafficHistory={rx:[],tx:[]};
+const titles={dashboard:["داشبورد","وضعیت زنده سرور نماینده"],locations:["لوکیشن‌ها","Health، Ping و Connections"],panel:["PasarGuard","مدیریت اتصال و آبجکت‌های محلی"],gateways:["Gatewayها","Best Ping و Failover"],tools:["ابزارها","Diagnostics، Sync و Maintenance"]};
+const fmtBytes=n=>{n=Number(n||0);const u=["B","KB","MB","GB","TB","PB"];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return (i? n.toFixed(n<10?2:1):Math.round(n))+" "+u[i]};
+const fmtUp=s=>{s=Number(s||0);const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+"d "+h+"h":h?h+"h "+m+"m":m+"m"};
+const ago=t=>{if(!t)return"—";let s=Math.max(0,Math.floor(Date.now()/1000)-Number(t));return s<60?s+"s ago":s<3600?Math.floor(s/60)+"m ago":Math.floor(s/3600)+"h ago"};
+function toast(msg,err=false){let e=$("#toast");e.textContent=msg;e.className="toast"+(err?" err":"");clearTimeout(e._t);e._t=setTimeout(()=>e.classList.add("hidden"),4200)}
+async function api(path,opt={}){opt.headers={...(opt.headers||{})};if(csrf&&opt.method&&opt.method!=="GET")opt.headers["X-CSRF-Token"]=csrf;if(opt.body&&!opt.headers["Content-Type"])opt.headers["Content-Type"]="application/json";let r=await fetch(path,opt);let d={};try{d=await r.json()}catch{}if(r.status===401){showLogin();throw Error("session_expired")}if(!r.ok)throw Error(d.detail||("HTTP "+r.status));return d}
+function showLogin(){if(liveSource){liveSource.close();liveSource=null}$("#appView").classList.add("hidden");$("#loginView").classList.remove("hidden")}
+function showApp(){ $("#loginView").classList.add("hidden");$("#appView").classList.remove("hidden"); startLive(); navigate(currentPage)}
+function navigate(p){currentPage=p;$$(".page").forEach(x=>x.classList.remove("active"));$("#page-"+p).classList.add("active");$$("[data-page]").forEach(x=>x.classList.toggle("active",x.dataset.page===p));$("#pageTitle").textContent=titles[p][0];$("#subtitle").textContent=titles[p][1]; if(p==="panel")loadPanel(); if(p==="gateways")loadGateways(); if(p==="tools")loadLogs()}
+function stateBadge(s){s=String(s||"CHECKING").toUpperCase();return '<span class="status-dot s-'+s.toLowerCase()+'"></span>'+s.replace("_"," ")}
+function locCard(x){return '<div class="loc"><div class="loc-top"><div class="loc-name">'+escapeHtml(x.label||x.country_code)+'</div><span class="small">'+stateBadge(x.state)+'</span></div><div class="loc-meta"><span>:'+x.local_port+'</span><span>'+(x.connections||0)+' conn</span><span>'+(x.total_latency_ms==null?"—":Math.round(x.total_latency_ms)+"ms")+'</span></div></div>'}
+function escapeHtml(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
+function renderDashboard(d){
+ $("#sideVersion").textContent="v"+d.version+" · Web "+d.web_version;$("#sideNode").textContent=(d.node_id||"—").slice(0,18);
+ let L=d.license||{};$("#trafficUsed").textContent=fmtBytes(L.used_bytes);$("#trafficLimit").textContent=L.limit_bytes?fmtBytes(L.used_bytes)+" از "+fmtBytes(L.limit_bytes)+" · "+(L.percent||0)+"%":"بدون سقف";$("#trafficBar").style.width=Math.min(100,L.percent||0)+"%";
+ let rt=d.runtime||{};let rx=Number(rt.rx_mbps||0),tx=Number(rt.tx_mbps||0);$("#liveTraffic").textContent=(rx+tx).toFixed(2)+" Mbps";$("#liveTrafficSub").textContent="↓ "+rx.toFixed(2)+" · ↑ "+tx.toFixed(2);$("#connections").textContent=rt.active_connections||0;
+ $("#gatewayPing").textContent=d.gateway_latency_ms==null?"—":Math.round(d.gateway_latency_ms)+" ms";$("#gatewayName").textContent=(d.gateway&& (d.gateway.name||d.gateway.id))||"current";
+ $("#rxNow").textContent=rx.toFixed(2);$("#txNow").textContent=tx.toFixed(2);trafficHistory.rx.push(rx);trafficHistory.tx.push(tx);if(trafficHistory.rx.length>45){trafficHistory.rx.shift();trafficHistory.tx.shift()}drawChart();
+ let s=d.system||{},mem=s.memory||{},disk=s.disk||{};$("#cpu").textContent=(s.cpu_percent||0)+"%";$("#ram").textContent=mem.total?fmtBytes(mem.used)+" / "+fmtBytes(mem.total):"—";$("#disk").textContent=disk.total?fmtBytes(disk.used)+" / "+fmtBytes(disk.total):"—";$("#load").textContent=(s.load||[]).join(" / ");$("#uptimeBadge").textContent=fmtUp(s.uptime_seconds);
+ let sv=d.services||{};$("#svcAgent").textContent=sv.agent||"—";$("#svcWeb").textContent=sv.web||"—";$("#svcHaproxy").textContent=sv.haproxy||"—";let wg=d.wireguard||{};$("#wgState").textContent=wg.up?"ONLINE":"OFFLINE";$("#wgEndpoint").textContent=wg.endpoint||wg.peer_endpoint||"—";$("#lastSync").textContent=ago(d.last_sync);
+ $("#agentBadge").className="badge "+(sv.agent==="active"?"on":"off");$("#agentBadge").textContent=sv.agent==="active"?"Agent Online":"Agent Offline";
+ let locs=d.locations||[],cnt={ONLINE:0,DEGRADED:0,OFFLINE:0,NO_UPSTREAM:0,CHECKING:0};locs.forEach(x=>cnt[x.state]=(cnt[x.state]||0)+1);
+ $("#healthSummary").innerHTML='<span class="badge on">'+cnt.ONLINE+' ONLINE</span><span class="badge warn">'+cnt.DEGRADED+' DEGRADED</span><span class="badge off">'+cnt.OFFLINE+' OFFLINE</span><span class="badge">'+cnt.NO_UPSTREAM+' NO UPSTREAM</span>';
+ $("#dashboardLocations").innerHTML=locs.slice(0,10).map(locCard).join("");$("#allLocations").innerHTML=locs.map(locCard).join("");$("#locationsCounter").textContent=cnt.ONLINE+" online / "+locs.length;
+ $("#livePill").className="pill "+(d.gateway_reachable?"online":"");$("#livePill").textContent=d.gateway_reachable?"● Live":"● Gateway Offline";
+}
+function drawChart(){let c=$("#trafficChart"),ctx=c.getContext("2d"),r=c.getBoundingClientRect(),w=Math.max(300,Math.floor(r.width*devicePixelRatio)),h=Math.floor(110*devicePixelRatio);if(c.width!==w||c.height!==h){c.width=w;c.height=h}ctx.clearRect(0,0,w,h);let all=[...trafficHistory.rx,...trafficHistory.tx],max=Math.max(1,...all)*1.12;const line=(arr,color)=>{if(arr.length<2)return;ctx.beginPath();arr.forEach((v,i)=>{let x=i/(44)*w,y=h-(v/max*h*.85)-h*.05;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.strokeStyle=color;ctx.lineWidth=2*devicePixelRatio;ctx.stroke()};line(trafficHistory.rx,"#34d399");line(trafficHistory.tx,"#f5be40")}
+async function loadPanel(){try{let d=await api("/api/panel"),s=d.status||{},p=d.profile||{};$("#panelBadge").className="badge "+(s.ok?"on":"off");$("#panelBadge").textContent=s.ok?"ONLINE":"OFFLINE";$("#panelMetrics").innerHTML=[["Type",s.type||p.type],["Inbounds",s.inbounds],["GANJ Inbounds",s.managed_inbounds],["Hosts",s.hosts],["GANJ Hosts",s.managed_hosts]].map(x=>'<div class="metric-row"><span>'+x[0]+'</span><b>'+escapeHtml(x[1]??"—")+'</b></div>').join("");$("#panelProfile").innerHTML=[["Core",p.core_id],["Template Inbound",p.template_inbound_tag||p.template_inbound_id],["Template Host",p.template_host_id],["URL","Local / hidden"]].map(x=>'<div class="metric-row"><span>'+x[0]+'</span><b>'+escapeHtml(x[1]??"—")+'</b></div>').join("");$("#inboundsTable").innerHTML=(d.inbounds||[]).map(x=>'<tr><td>'+escapeHtml(x.tag||x.remark||x.id)+'</td><td>'+escapeHtml(x.protocol)+'</td><td class="ltr">'+escapeHtml(x.listen||"—")+'</td><td>'+escapeHtml(x.port||"—")+'</td></tr>').join("")}catch(e){toast(e.message,true)}}
+async function loadGateways(){try{let d=await api("/api/gateways");$("#gatewayCurrent").textContent=d.current||"—";$("#gatewayList").innerHTML=(d.items||[]).map(x=>'<div class="metric-row"><span>'+(x.endpoint===d.current?"★ ":"")+escapeHtml(x.name||x.id)+'</span><b class="ltr">'+escapeHtml(x.endpoint)+' · '+(x.latency_ms==null?"offline":Math.round(x.latency_ms)+"ms")+' <button class="btn gw-switch" data-id="'+escapeHtml(x.id)+'">Switch</button> <button class="btn danger gw-remove" data-id="'+escapeHtml(x.id)+'">×</button></b></div>').join("");$$(".gw-switch").forEach(b=>b.onclick=()=>runAction("gateway_switch",{target:b.dataset.id}));$$(".gw-remove").forEach(b=>b.onclick=()=>runAction("gateway_remove",{target:b.dataset.id}).then(loadGateways))}catch(e){toast(e.message,true)}}
+async function loadLogs(){try{$("#logs").textContent=(await api("/api/logs?lines=120")).lines||"—"}catch(e){$("#logs").textContent=e.message}}
+async function runAction(action,extra={}){try{toast("در حال اجرا: "+action);let d=await api("/api/action",{method:"POST",body:JSON.stringify({action,...extra})});toast("انجام شد: "+action);setTimeout(refreshOnce,800);return d}catch(e){toast(e.message,true);throw e}}
+function startLive(){if(liveSource)liveSource.close();liveSource=new EventSource("/api/events");liveSource.addEventListener("status",e=>{try{renderDashboard(JSON.parse(e.data))}catch{}});liveSource.onerror=()=>{$("#livePill").className="pill";$("#livePill").textContent="در حال اتصال..."}}
+async function refreshOnce(){try{renderDashboard(await api("/api/dashboard"))}catch(e){toast(e.message,true)}}
+$("#loginForm").onsubmit=async e=>{e.preventDefault();$("#loginError").textContent="";try{let d=await api("/api/login",{method:"POST",body:JSON.stringify({username:$("#username").value,password:$("#password").value})});csrf=d.csrf;showApp();refreshOnce()}catch(err){$("#loginError").textContent=err.message}};
+$("#logoutBtn").onclick=async()=>{try{await api("/api/logout",{method:"POST",body:"{}"})}catch{}csrf="";showLogin()};
+$("#refreshBtn").onclick=refreshOnce;$$("[data-page]").forEach(b=>b.onclick=()=>navigate(b.dataset.page));$$("[data-action]").forEach(b=>b.onclick=()=>runAction(b.dataset.action));
+$("#removeLocationsBtn").onclick=()=>{if(confirm("فقط Locationهای مدیریت‌شده توسط GANJ حذف شوند؟"))runAction("locations_remove",{confirm:"REMOVE"})};
+$("#bestGatewayBtn").onclick=()=>runAction("gateway_switch",{target:"best"}).then(loadGateways);
+$("#addGatewayBtn").onclick=()=>runAction("gateway_add",{name:$("#gwName").value,endpoint:$("#gwEndpoint").value}).then(loadGateways);
+$("#diagBtn").onclick=async()=>{try{let d=await api("/api/diagnostics");$("#diagResult").innerHTML=Object.entries(d.checks||{}).map(([k,v])=>'<div class="metric-row"><span>'+escapeHtml(k)+'</span><b class="'+(v?"accent":"")+'">'+escapeHtml(v)+'</b></div>').join("")}catch(e){toast(e.message,true)}};
+$("#logsBtn").onclick=loadLogs;$("#uninstallBtn").onclick=()=>{if(prompt("برای حذف کامل عبارت UNINSTALL را وارد کن")==="UNINSTALL")runAction("uninstall",{confirm:"UNINSTALL"})};
+window.addEventListener("resize",drawChart);
+(async()=>{try{let s=await api("/api/session");csrf=s.csrf;showApp();await refreshOnce()}catch{showLogin()}})();
+</script>
+</body>
+</html>
