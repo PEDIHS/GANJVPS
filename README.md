@@ -194,3 +194,16 @@ Production PANEL Gateway requires the extra dependency listed in
 `deploy/panel-gateway/requirements-extra.txt`, and the corresponding database,
 API and admin-UI changes are tracked in
 `deploy/panel-gateway/ganj-central-web-login-20260921.patch`.
+
+
+### Central representatives UI
+
+The representatives page in the production PANEL Gateway now uses responsive
+management cards instead of a wide status table. Each representative card groups
+Panel/Tunnel state, Web Login, License/Traffic and Location separately, followed
+by normal maintenance actions and destructive actions in distinct areas.
+
+The page also includes representative search and filters for online, offline,
+pending-enrollment and problem states. The create-representative form is split
+into identity/install, subscription and Web Panel credential groups and collapses
+cleanly to a single-column mobile layout.
