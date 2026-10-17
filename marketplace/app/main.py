@@ -12,6 +12,7 @@ from app.config import config
 from app.db import init_db, get_db, SessionLocal
 from app.auth import validate_webapp_init_data, make_session, get_actor, csrf_guard, csrf_token, permission_for
 from app.provisioning import preflight_order, RUNTIME_MATRIX
+from app.catalog_api import router as catalog_router
 from app.services import (create_host, create_plan, purchase, get_balance, adjust_wallet,
                          available_slots, owner_ids, request_operation, vote, audit, user_get_or_create)
 from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, TicketMessage, TelegramOutbox, utcnow
@@ -22,6 +23,7 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title="GANJ VPS Marketplace", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.include_router(catalog_router)
 
 @app.middleware("http")
 async def harden_headers(request: Request, call_next):
