@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request
 import httpx
 from app.config import config
 from app.db import SessionLocal
-from app.models import (User, AdminPermission, Plan, Host, Slot, Subscription, Operation, OperationVote,
+from app.models import (User, AdminPermission, Plan, Datacenter, CatalogLocation, PlanCatalog, HostCatalog, Host, Slot, Subscription, Operation, OperationVote,
                         BotState, ProcessedUpdate, TelegramOutbox, WalletEntry, Ticket, TicketMessage, Order)
 from app.services import (user_get_or_create, available_slots, get_balance,
                          request_operation, vote, owner_ids, purchase)
@@ -48,6 +48,7 @@ BOT_ADMIN_SECTIONS = (
     ('users', 'users.read', '👥 کاربران'),
     ('tickets', 'tickets.read', '🎧 پشتیبانی'),
     ('provisioning', 'nodes.provision', '🔧 صف نصب نودها'),
+    ('catalog', 'servers.manage', '🏢 دیتاسنترها و لوکیشن‌ها'),
 )
 
 
@@ -190,6 +191,7 @@ def catalog_view(db, capacity: str = 'all', page: int = 0,
     else:
         text += ('\n<i>روی عنوان هر دسته یا تعداد کنارش بزن '
                  'تا لیست همان نودها باز شود.</i>')
+    rows.append([('🔎 جست‌وجوی نود بر اساس دیتاسنتر و منابع', 'xcat:home', 'success')])
     rows.extend(navigation('shop' if show_plans else 'home',
                            home=show_plans))
     return text, kb(rows)
@@ -311,6 +313,22 @@ def process_update(db, update: dict):
             count = db.scalar(select(func.count()).select_from(Ticket).where(
                 Ticket.status != 'closed')) or 0
             body = titlebar('درخواست‌های پشتیبانی', 'SUPPORT DESK') + f'🎧 تیکت‌های باز: <b>{count}</b>\n\nبرای پاسخ به مشتریان وارد پنل مدیریت وب شو.'
+        elif key == 'catalog':
+            dcs = db.scalars(select(Datacenter).order_by(Datacenter.name)).all()
+            locations = db.scalar(select(func.count()).select_from(CatalogLocation)) or 0
+            attached = db.scalar(select(func.count()).select_from(HostCatalog)) or 0
+            sales = db.scalar(select(func.count()).select_from(PlanCatalog)) or 0
+            body = (titlebar('مدیریت دیتاسنتر و لوکیشن', 'GANJ / PRODUCT CATALOG') +
+                    f'🏢 دیتاسنترها: <b>{len(dcs)}</b>\n'
+                    f'📍 لوکیشن‌ها: <b>{locations}</b>\n'
+                    f'🖥 سرورهای دسته‌بندی‌شده: <b>{attached}</b>\n'
+                    f'🛍 پلن‌های دسته‌بندی‌شده: <b>{sales}</b>\n\n' +
+                    ('\n'.join('• ' + html.escape(dc.name[:40]) +
+                               (' ✅' if dc.enabled else ' ⏸') for dc in dcs[:8])
+                     or 'هنوز دیتاسنتری ثبت نشده است.') +
+                    '\n\n<i>برای افزودن، غیرفعال‌کردن، اتصال سرور یا مشخصات CPU/RAM '
+                    'از مدیریت کاتالوگ در داشبورد استفاده کن. '
+                    'موجودی خالی به‌معنی نود آماده تحویل نیست.</i>')
         elif key == 'provisioning':
             from app.models import ProvisionJob
             from app.config import config as cfg
@@ -329,11 +347,87 @@ def process_update(db, update: dict):
                     'هر میزبان ابتدا باید پیش‌بررسی و تست عملی را بگذراند.</i>')
         else:
             return [emit(user_id, 'این بخش پیدا نشد.', kb(navigation('admin')))]
-        buttons = kb(navigation('admin'))
+        if key == 'catalog':
+            buttons = kb([[('🏢 دیتاسنترها', 'adcat:dc'),
+                               ('📍 لوکیشن‌ها', 'adcat:locations')],
+                              [('🖥 سرورها بر اساس لوکیشن', 'adcat:hosts')]] +
+                          navigation('admin'))
+        else:
+            buttons = kb(navigation('admin'))
         if config.public_base_url.startswith('https://'):
             buttons['inline_keyboard'].insert(0, [{'text':'✨ مدیریت در داشبورد',
                            'web_app':{'url':config.public_base_url}}])
         return [emit(user_id, body, buttons)]
+    if data.startswith('adcat:'):
+        if 'servers.manage' not in bot_admin_scopes(db, user_id):
+            return [emit(user_id, 'دسترسی مجاز نیست.', kb(navigation('home')))]
+        parts = data.split(':')
+        kind = parts[1] if len(parts) >= 2 else ''
+        ident = parts[2] if len(parts) == 3 else None
+        rows = []
+        title = 'مدیریت زیرساخت و دیتاسنترها'
+        body = ''
+        back = 'admin:catalog'
+        if kind == 'dc':
+            dcs = db.scalars(select(Datacenter).order_by(Datacenter.name).limit(25)).all()
+            body = f'🏢 دیتاسنترهای ثبت‌شده: <b>{len(dcs)}</b>\n'
+            rows = [[('🏢 '+dc.name[:35], 'adcat:dcid:'+dc.id)]
+                    for dc in dcs]
+        elif kind == 'dcid' and ident:
+            dc = db.get(Datacenter, ident)
+            if not dc:
+                return [emit(user_id, 'دیتاسنتر پیدا نشد.', kb(navigation('adcat:dc')))]
+            locations = db.scalars(select(CatalogLocation).where(
+                CatalogLocation.datacenter_id == dc.id).order_by(
+                CatalogLocation.city).limit(25)).all()
+            title = 'لوکیشن‌های ' + dc.name[:50]
+            body = f'📍 تعداد لوکیشن‌ها: <b>{len(locations)}</b>\n'
+            rows = [[('📍 '+loc.country_name[:18]+' / '+loc.city[:19],
+                      'adcat:locid:'+loc.id)] for loc in locations]
+            back = 'adcat:dc'
+        elif kind == 'locations':
+            locations = db.scalars(select(CatalogLocation).order_by(
+                CatalogLocation.country_code, CatalogLocation.city).limit(25)).all()
+            title = 'همه لوکیشن‌ها'
+            rows = [[('📍 '+loc.country_name[:18]+' / '+loc.city[:19],
+                      'adcat:locid:'+loc.id)] for loc in locations]
+            body = f'لوکیشن‌های ثبت‌شده: <b>{len(locations)}</b>\n'
+        elif kind == 'locid' and ident:
+            loc = db.get(CatalogLocation, ident)
+            if not loc:
+                return [emit(user_id, 'لوکیشن پیدا نشد.', kb(navigation('adcat:locations')))]
+            dc = db.get(Datacenter, loc.datacenter_id)
+            attached = db.scalars(select(HostCatalog).where(
+                HostCatalog.location_id == loc.id)).all()
+            hosts = [db.get(Host, link.host_id) for link in attached]
+            title = 'سرورهای ' + loc.city[:40]
+            body = (f'🏢 دیتاسنتر: <b>{html.escape(dc.name)}</b>\n'
+                    f'🌍 کشور: <b>{html.escape(loc.country_name)}</b>\n'
+                    f'📍 شهر: <b>{html.escape(loc.city)}</b>\n'
+                    f'🖥 سرورهای ثبت‌شده: <b>{len(hosts)}</b>\n\n')
+            for h in hosts[:12]:
+                body += (f'• <b>{html.escape(h.name[:60])}</b>\n'
+                         f'    vCPU: {h.cpu} • RAM: {h.ram_mb} MB'
+                         f' • ظرفیت: {h.capacity} نفره\n')
+            back = 'adcat:dcid:'+loc.datacenter_id
+        elif kind == 'hosts':
+            placements = db.scalars(select(HostCatalog).limit(25)).all()
+            title = 'سرورها به تفکیک لوکیشن'
+            for place in placements:
+                loc = db.get(CatalogLocation, place.location_id)
+                host = db.get(Host, place.host_id)
+                if host and loc:
+                    dc = db.get(Datacenter, loc.datacenter_id)
+                    rows.append([('🖥 '+host.name[:23]+' / '+loc.city[:15],
+                                  'adcat:locid:'+loc.id)])
+            body = f'🖥 سرورهای دسته‌بندی‌شده: <b>{len(rows)}</b>\n'
+        else:
+            return [emit(user_id, 'دسته‌بندی پیدا نشد.', kb(navigation('admin:catalog')))]
+        if not rows and kind != 'locid':
+            body += '\nهنوز گزینه‌ای در این بخش ثبت نشده است.'
+        text = titlebar(title, 'GANJ / ADMIN INVENTORY') + '\n' + body
+        rows += navigation(back)
+        return [emit(user_id, text, kb(rows))]
     if data == 'guide':
         text = (titlebar('راهنمای خرید و مدیریت', 'HOW IT WORKS') +
                 '\n<b>۱. انتخاب نود</b>\n'
@@ -441,6 +535,23 @@ def process_update(db, update: dict):
         text, keyboard = catalog_view(db, capacity, page, show_plans=data.startswith('shopcat:'))
         return [emit(user_id, text, keyboard)]
 
+    if data.startswith('xcat:'):
+        from app.catalog_bot import render_catalog_filter
+        parts = data.split(':')
+        if len(parts) > 4 or len(parts) < 2:
+            return [emit(user_id, 'دسته‌بندی نامعتبر است.', kb(navigation('shop')))]
+        kind = parts[1]
+        code = parts[2] if len(parts) >= 3 else ''
+        if kind.endswith('id') and kind in {'ramid','cpuid','trafficid'}:
+            if not code.isdigit() or int(code)>1000000:
+                return [emit(user_id, 'فیلتر منابع نامعتبر است.', kb(navigation('shop')))]
+        try:
+            page = int(parts[3]) if len(parts)==4 else 0
+        except ValueError:
+            page = 0
+        text, rows = render_catalog_filter(db, kind, code, page)
+        return [emit(user_id, text, kb(rows))]
+
     if data.startswith('plan:'):
         plan = db.get(Plan, data[5:])
         if not plan or not plan.enabled:
@@ -459,6 +570,21 @@ def process_update(db, update: dict):
                 f'{SEPARATOR}\n'
                 'پنل موردنظرت را انتخاب کن:'
                 '\n<i>بعد از انتخاب پنل، فاکتور و مبلغ نهایی نمایش داده می‌شود.</i>')
+        spec = db.get(PlanCatalog, plan.id)
+        if spec:
+            loc = db.get(CatalogLocation, spec.location_id)
+            dc = db.get(Datacenter, loc.datacenter_id) if loc else None
+            if loc and dc:
+                catalog_info = (
+                    '\n🏢 دیتاسنتر: <b>' + html.escape(dc.name) + '</b>\n'
+                    '📍 لوکیشن: <b>' + html.escape(loc.country_name + ' - ' + loc.city) + '</b>\n'
+                    f'🧮 حداقل پردازنده هر کاربر: <b>{spec.min_vcpu} vCPU</b>\n'
+                    f'💾 حداقل RAM هر کاربر: <b>{spec.min_ram_mb} MB</b>\n'
+                    '📈 ترافیک دوره: <b>' +
+                    (str(spec.min_traffic_gb)+' GB' if spec.min_traffic_gb is not None else
+                     'نامشخص / هنوز اعلام نشده') + '</b>\n'
+                    '💻 نوع سیستم: <b>' + html.escape(spec.os_family) + '</b>\n')
+                body = body.replace('پنل موردنظرت را انتخاب کن:', catalog_info + '\nپنل موردنظرت را انتخاب کن:')
         rows = [[('🟢 پاسارگارد', f'runtime:{plan.id}:pasarguard'),
                  ('🔷 ربکا', f'runtime:{plan.id}:rebecca')],
                 [('🟣 مرزبان', f'runtime:{plan.id}:marzban')]]
