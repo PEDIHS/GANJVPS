@@ -799,3 +799,141 @@ def test_bot_scoped_staff_permissions_prevent_admin_data_leaks():
         db.delete(row)
         db.commit()
         assert 'دسترسی مجاز نیست' in process_update(db, cb('admin:tickets'))[0]['text']
+
+
+def test_catalog_taxonomy_links_datacenter_location_real_hosts_and_skus():
+    host_id, plan_id = setup_host(capacity=2)
+    dc = client.post('/api/v1/admin/catalog/datacenters',
+                     headers=admin, json={'name':'Hetzner', 'slug':'hetzner'})
+    assert dc.status_code == 200, dc.text
+    did = dc.json()['id']
+    duplicate = client.post('/api/v1/admin/catalog/datacenters',
+                      headers=admin, json={'name':'Other','slug':'hetzner'})
+    assert duplicate.status_code == 422
+    location = client.post('/api/v1/admin/catalog/locations',
+                           headers=admin, json={'datacenter_id':did,
+                            'country_code':'DE','country_name':'آلمان','city':'Falkenstein'})
+    assert location.status_code == 200, location.text
+    lid = location.json()['id']
+    h = client.put('/api/v1/admin/catalog/hosts/'+host_id+'/placement',headers=admin,
+                   json={'location_id':lid,'bandwidth_gb':5000,'os_family':'linux'})
+    assert h.status_code == 200, h.text
+    p = client.put('/api/v1/admin/catalog/plans/'+plan_id+'/placement',
+                   headers=admin,json={'location_id':lid,'min_vcpu':1,
+                     'min_ram_mb':1024,'min_traffic_gb':1000,'os_family':'linux'})
+    assert p.status_code == 200, p.text
+    plans = client.get('/api/v1/admin/catalog/plans',headers=admin).json()
+    assert plans[0]['stock'] == 2
+    assert plans[0]['datacenter'] == 'Hetzner'
+    catalog = client.get('/api/v1/catalog').json()
+    assert catalog[0]['available'] == 2
+    from app.telegram import process_update
+    with SessionLocal() as db:
+        cb = lambda code: {'callback_query':{
+            'data':code, 'from':{'id':99991},'message':{
+            'message_id':1,'chat':{'id':99991,'type':'private'}}}}
+        start = process_update(db,cb('xcat:home'))[0]
+        assert 'دیتاسنتر' in str(start)
+        choices = process_update(db,cb('xcat:dc'))[0]
+        assert 'Hetzner' in str(choices)
+        selected = process_update(db,cb('xcat:dcid:'+did))[0]
+        assert 'DE Node' in str(selected)
+        detail = process_update(db,cb('plan:'+plan_id))[0]
+        assert 'Falkenstein' in detail['text']
+        assert '1000 GB' in detail['text']
+    credit(99991)
+    buyer, order = buy(99991,plan_id)
+    assert order['status']=='paid'
+    assert len(client.get('/api/v1/catalog').json()) == 1
+    assert client.get('/api/v1/catalog').json()[0]['available'] == 1
+
+
+def test_catalog_ensures_physical_capacity_and_location_isolation():
+    host1, plan = setup_host(capacity=2)
+    h2 = client.post('/api/v1/admin/hosts',headers=admin,
+      json={'name':'Other DE host','region':'DE','ip':'198.51.100.43','capacity':2,
+            'cpu':2,'ram_mb':4096,'reserved_ram_mb':256,'monthly_cost':300000})
+    assert h2.status_code == 200
+    host2 = h2.json()['id']
+    dc1 = client.post('/api/v1/admin/catalog/datacenters',headers=admin,
+       json={'name':'Hetzner','slug':'hetzner'}).json()['id']
+    dc2 = client.post('/api/v1/admin/catalog/datacenters',headers=admin,
+       json={'name':'Vultr','slug':'vultr'}).json()['id']
+    def loc(dc,city):
+      r=client.post('/api/v1/admin/catalog/locations',headers=admin,
+       json={'datacenter_id':dc,'country_code':'DE','country_name':'Germany','city':city})
+      assert r.status_code == 200,r.text
+      return r.json()['id']
+    loc1=loc(dc1,'Frankfurt')
+    loc2=loc(dc2,'Berlin')
+    for host,location in ((host1,loc1),(host2,loc2)):
+      assert client.put('/api/v1/admin/catalog/hosts/'+host+'/placement',
+       headers=admin,json={'location_id':location,'bandwidth_gb':4000}).status_code==200
+    url='/api/v1/admin/catalog/plans/'+plan+'/placement'
+    assert client.put(url,headers=admin,json={'location_id':loc1,
+       'min_vcpu':2,'min_ram_mb':1024}).status_code == 200
+    assert client.get('/api/v1/catalog').json()[0]['available']==0  # CPU=3/2, <2 vCPU each
+    assert client.put(url,headers=admin,json={'location_id':loc1,
+       'min_vcpu':1,'min_ram_mb':2048}).status_code == 200
+    assert client.get('/api/v1/catalog').json()[0]['available']==0  # 4096 - 256 <2*2048
+    assert client.put(url,headers=admin,json={'location_id':loc1,
+       'min_vcpu':1,'min_ram_mb':1024}).status_code == 200
+    assert client.get('/api/v1/catalog').json()[0]['available']==2
+    credit(99992,600000)
+    buyer,order=buy(99992,plan)
+    with SessionLocal() as db:
+        from app.models import Slot
+        assert db.get(Slot,db.scalar(select(Subscription).where(
+               Subscription.order_id==order['id'])).slot_id).host_id==host1
+    # Disabling a datacenter stops new sales from this location (old order untouched).
+    stop=client.patch('/api/v1/admin/catalog/datacenters/'+dc1,headers=admin,
+                      json={'enabled':False})
+    assert stop.status_code==200
+    assert client.get('/api/v1/catalog').json()[0]['available']==0
+    assert buyer.get('/api/v1/orders/'+order['id']).status_code==200
+
+
+def test_catalog_access_scope_and_country_guard():
+    host,plan=setup_host()
+    customer=login(99994)
+    for url in ('/api/v1/admin/catalog/datacenters',
+                '/api/v1/admin/catalog/hosts','/api/v1/admin/catalog/plans'):
+       assert customer.get(url).status_code==403
+    dc=client.post('/api/v1/admin/catalog/datacenters',headers=admin,
+      json={'name':'Provider','slug':'provider'}).json()['id']
+    loc=client.post('/api/v1/admin/catalog/locations',headers=admin,
+      json={'datacenter_id':dc,'country_code':'US','country_name':'USA','city':'New York'}).json()['id']
+    invalid=client.put('/api/v1/admin/catalog/hosts/'+host+'/placement',
+       headers=admin,json={'location_id':loc})
+    assert invalid.status_code==422
+    invalid=client.put('/api/v1/admin/catalog/plans/'+plan+'/placement',
+       headers=admin,json={'location_id':loc})
+    assert invalid.status_code==422
+
+
+def test_bot_admin_browses_real_datacenters_locations_and_hosts():
+    from app.telegram import process_update
+    from app.config import config
+    host, plan = setup_host(capacity=2)
+    dc = client.post('/api/v1/admin/catalog/datacenters', headers=admin,
+        json={'name':'Hetzner', 'slug':'hetzner'}).json()['id']
+    loc = client.post('/api/v1/admin/catalog/locations', headers=admin,
+        json={'datacenter_id':dc,'country_code':'DE','country_name':'Germany',
+              'city':'Falkenstein'}).json()['id']
+    assert client.put('/api/v1/admin/catalog/hosts/'+host+'/placement',
+        headers=admin,json={'location_id':loc,'bandwidth_gb':2500}).status_code==200
+    def cb(uid,action):
+      return {'callback_query':{'data':action,'from':{'id':uid},
+        'message':{'message_id':3,'chat':{'id':uid,'type':'private'}}}}
+    with SessionLocal() as db:
+        admin_main=process_update(db,cb(config.owner_id,'admin:catalog'))[0]
+        assert 'adcat:dc' in str(admin_main['reply_markup'])
+        listing=process_update(db,cb(config.owner_id,'adcat:dc'))[0]
+        assert 'Hetzner' in str(listing['reply_markup'])
+        places=process_update(db,cb(config.owner_id,'adcat:dcid:'+dc))[0]
+        assert 'Falkenstein' in str(places['reply_markup'])
+        detail=process_update(db,cb(config.owner_id,'adcat:locid:'+loc))[0]
+        assert 'Test Host' in detail['text']
+        assert '4096 MB' in detail['text']
+        denied=process_update(db,cb(88909,'adcat:dc'))[0]
+        assert 'دسترسی مجاز نیست' in denied['text']

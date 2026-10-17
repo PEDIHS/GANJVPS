@@ -5,7 +5,8 @@ import ipaddress
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from app.models import (User, AdminPermission, Host, Slot, Plan, Order, Subscription,
+from app.models import (Datacenter, CatalogLocation, HostCatalog, PlanCatalog,
+                        User, AdminPermission, Host, Slot, Plan, Order, Subscription,
                         WalletEntry, ProvisionJob, Operation, OperationVote, Audit, utcnow)
 from app.config import config
 
@@ -108,12 +109,42 @@ def adjust_wallet(db: Session, actor: int, user_id: int, delta: int, reason: str
     return item
 
 
-def available_slots(db: Session, plan: Plan):
-    return db.scalars(select(Slot).join(Host, Host.id == Slot.host_id)
-        .where(Slot.status == "available", Host.region == plan.region,
-               Host.capacity == plan.capacity, Host.status == "available")
-        .order_by(Host.created_at, Slot.slot_no)).all()
+def matching_hosts(db: Session, plan: Plan, *, lock: bool = False):
+    """Physical hosts eligible for a SKU. Never silently swap datacenters."""
+    q = select(Host).where(Host.region == plan.region,
+                            Host.capacity == plan.capacity,
+                            Host.status == "available")
+    spec = db.get(PlanCatalog, plan.id)
+    if spec and spec.os_family != "linux":
+        # Windows nodes have no reviewed installer/agent yet; do not sell them.
+        return []
+    if spec:
+        q = q.join(HostCatalog, HostCatalog.host_id == Host.id).join(
+            CatalogLocation, CatalogLocation.id == HostCatalog.location_id).join(
+            Datacenter, Datacenter.id == CatalogLocation.datacenter_id).where(
+            HostCatalog.location_id == spec.location_id,
+            CatalogLocation.enabled == True, Datacenter.enabled == True,
+            CatalogLocation.country_code == plan.region,
+            HostCatalog.os_family == spec.os_family)
+        # Resource quantities are PER OCCUPANT of a shared physical host.
+        # Missing traffic quota is unknown, NOT an unlimited quota.
+        q = q.where(Host.cpu >= spec.min_vcpu * plan.capacity,
+                    Host.ram_mb - Host.reserved_ram_mb >= spec.min_ram_mb * plan.capacity)
+        if spec.min_traffic_gb is not None:
+            q = q.where(HostCatalog.bandwidth_gb.is_not(None),
+                        HostCatalog.bandwidth_gb >= spec.min_traffic_gb * plan.capacity)
+    if lock and db.bind.dialect.name == "postgresql":
+        q = q.with_for_update(of=Host)
+    return db.scalars(q.order_by(Host.created_at, Host.id)).all()
 
+
+def available_slots(db: Session, plan: Plan):
+    hosts = matching_hosts(db, plan)
+    if not hosts:
+        return []
+    return db.scalars(select(Slot).where(
+        Slot.host_id.in_([h.id for h in hosts]), Slot.status == "available")
+        .order_by(Slot.slot_no)).all()
 
 def purchase(db: Session, buyer_id: int, plan_id: str, runtime: str, idem: str) -> tuple[Order, bool]:
     """Call with a serialized DB write transaction (Postgres host lock / SQLite BEGIN IMMEDIATE)."""
@@ -130,8 +161,7 @@ def purchase(db: Session, buyer_id: int, plan_id: str, runtime: str, idem: str) 
     if get_balance(db, buyer_id) < plan.price_toman:
         raise HTTPException(409, "موجودی کیف پول کافی نیست")
     # Locked hosts on PostgreSQL; SQLite BEGIN IMMEDIATE is held by caller.
-    host_ids = db.scalars(select(Host.id).where(Host.region == plan.region,
-          Host.capacity == plan.capacity, Host.status == "available").with_for_update()).all()
+    host_ids = [h.id for h in matching_hosts(db, plan, lock=True)]
     slot = db.scalar(select(Slot).where(Slot.host_id.in_(host_ids), Slot.status == "available")
                      .order_by(Slot.slot_no).with_for_update()) if host_ids else None
     if not slot:
