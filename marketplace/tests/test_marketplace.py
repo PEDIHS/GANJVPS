@@ -470,7 +470,7 @@ def test_premium_bot_catalog_filters_are_real_and_wallet_checkout_guard():
             'shopcat:2:0', 'shopcat:3:0', 'shopcat:all:0']
         assert [r[1]['callback_data'] for r in board[:3]] == [
             'shopcat:2:0', 'shopcat:3:0', 'shopcat:all:0']
-        assert [r[1]['text'] for r in board[:3]] == ['2 عدد', '0 عدد', '2 عدد']
+        assert [r[0]['text'] for r in board[:3]] == ['2 عدد', '0 عدد', '2 عدد']
         assert not any(b.get('callback_data') == 'plan:' + plan
                        for row in board for b in row)
         selected = process_update(db, cb('shopcat:2:0'))[0]
@@ -555,9 +555,9 @@ def test_shop_inventory_category_counts_unique_slots_across_price_plans():
         rows = result['reply_markup']['inline_keyboard']
         # The same two physical slots are offered under two price plans.
         # Total must not be doubled to four.
-        assert rows[0][1]['text'] == '2 عدد'
-        assert rows[1][1]['text'] == '0 عدد'
-        assert rows[2][1]['text'] == '2 عدد'
+        assert rows[0][0]['text'] == '2 عدد'
+        assert rows[1][0]['text'] == '0 عدد'
+        assert rows[2][0]['text'] == '2 عدد'
         assert len(rows[0]) == len(rows[1]) == len(rows[2]) == 2
         assert all(row[0]['callback_data'] == row[1]['callback_data']
                    for row in rows[:3])
@@ -633,3 +633,21 @@ def test_telegram_button_color_for_all_return_paths():
     assert next(b for b in menu if b.get('callback_data') == 'shop')['style'] == 'success'
     assert next(b for b in menu if b.get('callback_data') == 'wallet')['style'] == 'primary'
     assert next(b for b in menu if b.get('callback_data') == 'mine')['style'] == 'primary'
+
+
+def test_category_rtl_visual_order_contract():
+    from app.telegram import catalog_view
+    with SessionLocal() as db:
+        text, keyboard = catalog_view(db)
+        rows = keyboard['inline_keyboard']
+        assert len(rows) >= 3
+        # On Telegram clients, first button currently renders to the left
+        # and second to the right. User-verified RTL contract: count LEFT, title RIGHT.
+        for row, category in zip(rows[:3], ('2','3','all')):
+            assert len(row) == 2
+            assert row[0]['text'].endswith(' عدد')
+            assert row[1]['callback_data'] == 'shopcat:' + category + ':0'
+            assert row[0]['callback_data'] == row[1]['callback_data']
+        assert 'دو نفره' in rows[0][1]['text']
+        assert 'سه نفره' in rows[1][1]['text']
+        assert 'همه نودها' in rows[2][1]['text']

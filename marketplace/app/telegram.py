@@ -133,7 +133,7 @@ def catalog_view(db, capacity: str = 'all', page: int = 0,
         count_label = f'{totals[category]} عدد'
         if show_plans and category == capacity:
             label = '✓ ' + label
-        rows.append([(label, action), (count_label, action)])
+        rows.append([(count_label, action), (label, action)])
     heading = titlebar('فروشگاه نودهای خارج', 'GANJ / NODE MARKET')
     label = {'all': 'همه نودها', '2': 'اشتراکی دو نفره',
              '3': 'اشتراکی سه نفره'}[capacity]
@@ -147,9 +147,9 @@ def catalog_view(db, capacity: str = 'all', page: int = 0,
         for plan, available in rows_for_page:
             action = 'plan:' + plan.id
             rows.append([
+                (f'{available} عدد', action),
                 (f'{region_badge(plan.region)} {plan.name[:23]}'
-                 f' · {plan.price_toman:,} ت', action),
-                (f'{available} عدد', action)
+                 f' · {plan.price_toman:,} ت', action)
             ])
         if pages > 1:
             pagination = []
