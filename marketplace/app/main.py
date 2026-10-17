@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import config
 from app.db import init_db, get_db, SessionLocal
 from app.auth import validate_webapp_init_data, make_session, get_actor, csrf_guard, csrf_token, permission_for
+from app.provisioning import preflight_order, RUNTIME_MATRIX
 from app.services import (create_host, create_plan, purchase, get_balance, adjust_wallet,
                          available_slots, owner_ids, request_operation, vote, audit, user_get_or_create)
 from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, TicketMessage, TelegramOutbox, utcnow
@@ -436,3 +437,30 @@ def dashboard(actor: int = Depends(permission_for("reports.read")), db: Session 
 
 from app.telegram import process_webhook
 app.post("/telegram/webhook")(process_webhook)
+
+
+# Provisioning control plane: READ ONLY until an authenticated test Host Agent,
+# immutable installer packages, host isolation and end-to-end PoC exist.
+@app.get("/api/v1/admin/provisioning/jobs")
+def provisioning_jobs(actor: int = Depends(permission_for("nodes.provision")),
+                      db: Session = Depends(get_db)):
+    jobs = db.scalars(select(ProvisionJob).order_by(
+        ProvisionJob.created_at.desc()).limit(100)).all()
+    return {
+        "execution_enabled": False,
+        "dry_run": config.dry_run,
+        "host_operations_enabled": config.host_ops_enabled,
+        "runtimes": {key: {"status": value["stage"], "isolation": value["isolation"]}
+                     for key, value in RUNTIME_MATRIX.items()},
+        "jobs": [{"id": j.id, "order_id": j.order_id, "slot_id": j.slot_id,
+                  "runtime": j.runtime_type, "state": j.state}
+                 for j in jobs],
+        "note": "No host is modified by this endpoint; no job is automatically executed.",
+    }
+
+
+@app.get("/api/v1/admin/provisioning/orders/{order_id}/preflight")
+def provisioning_preflight(order_id: str,
+                           actor: int = Depends(permission_for("nodes.provision")),
+                           db: Session = Depends(get_db)):
+    return preflight_order(db, order_id).admin_view()
