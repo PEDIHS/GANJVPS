@@ -1,6 +1,6 @@
 # GANJ VPS Marketplace — deployment record (2026-10-17)
 
-Status: **safe-mode web/API deployed**, not yet a live sellable node provisioning product.
+Status: **Phase 2 RTL web and admin UI deployed in safe mode**, not yet a live sellable node provisioning product.
 
 ## Running on the authorized server
 
@@ -48,3 +48,19 @@ curl -fsS https://vps.pedramhs.ir/healthz
 For safe rollback: stop only `ganj-vps-marketplace.service`, and restore the newest **VPS-only** Nginx config backup under `/etc/nginx/sites-available/vps.pedramhs.ir.backup-*`, test Nginx and reload. Do not alter the HAProxy reality or trade virtual host.
 
 Never print `marketplace.env`, token files, private keys, or the backup passphrase in chat/logs.
+
+
+## Phase 2 deployment — verified 2026-10-17
+
+- Squash merge commit on `main`: `8ab2a5f`, PR #22
+- Live dedicated Marketplace WorkingDirectory: `/opt/ganj-vps-marketplace-releases/phase2-e2665daf-20261017`
+- UI: responsive Persian emerald/gold customer/admin console; improved storefront, wallet ledger, votes, tickets, bot navigation code
+- Tests: 13/13 passed **on the VPS stage release** before go-live; both GitHub CI workflows succeeded; JavaScript syntax checked using Node.js
+- Verified encrypted PostgreSQL backup immediately before activation
+- Post-switch HTTPS root and health check returned HTTP 200 with valid TLS; existing Trade HTTPS stayed HTTP 200 with valid TLS
+- Anonymous wallet/admin API requests return HTTP 401
+- `DRY_RUN=true` and `ENABLE_HOST_OPERATIONS=false` remain intact
+- **Telegram bot token is not configured** in the Marketplace secret environment; webhook returns HTTP 503 until authorized configuration and BotFather token rotation. The bot is not connected yet.
+- No real panel provisioning, real payments, server power, or shared-IP changes were enabled
+- Rollback: remove only `/etc/systemd/system/ganj-vps-marketplace.service.d/phase2.conf`, reload systemd and restart `ganj-vps-marketplace.service`, leaving all other virtualhosts/services unchanged
+
