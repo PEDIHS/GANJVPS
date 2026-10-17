@@ -77,16 +77,28 @@ def get_balance(db: Session, user_id: int) -> int:
     return int(db.scalar(select(func.coalesce(func.sum(WalletEntry.delta_toman), 0)).where(WalletEntry.user_id == user_id)) or 0)
 
 
+def lock_wallet_owner(db: Session, user_id: int) -> None:
+    """Serialize balance-changing transactions per user on PostgreSQL.
+
+    SUM(wallet_entries) cannot itself be locked. The stable user row serves
+    as the wallet-level advisory lock, including when the balance is zero.
+    SQLite callers already serialize writes with BEGIN IMMEDIATE.
+    """
+    if db.bind.dialect.name == "postgresql":
+        db.execute(select(User.id).where(User.id == user_id).with_for_update()).first()
+
+
 def adjust_wallet(db: Session, actor: int, user_id: int, delta: int, reason: str, reference: str):
     require_permission(db, actor, "wallet.adjust")
     if delta == 0 or not reason.strip() or not reference.strip():
         raise HTTPException(422, "مبلغ، توضیح و شناسه تراکنش الزامی است")
+    user_get_or_create(db, user_id)
+    lock_wallet_owner(db, user_id)
     existing = db.scalar(select(WalletEntry).where(WalletEntry.dedupe_key == "manual:" + reference))
     if existing:
         if existing.user_id != user_id or existing.delta_toman != delta:
             raise HTTPException(409, "شناسه تراکنش قبلاً با مقادیر دیگری استفاده شده")
         return existing
-    user_get_or_create(db, user_id)
     if delta < 0 and get_balance(db, user_id) + delta < 0:
         raise HTTPException(409, "موجودی کافی نیست")
     item = WalletEntry(user_id=user_id, delta_toman=delta, reason=reason[:250], dedupe_key="manual:" + reference)
@@ -108,6 +120,7 @@ def purchase(db: Session, buyer_id: int, plan_id: str, runtime: str, idem: str) 
     if runtime not in RUNTIMES or not idem or len(idem) > 150:
         raise HTTPException(422, "نوع پنل یا شناسه سفارش نامعتبر است")
     user_get_or_create(db, buyer_id)
+    lock_wallet_owner(db, buyer_id)
     existing = db.scalar(select(Order).where(Order.user_id == buyer_id, Order.idempotency_key == idem))
     if existing:
         return existing, False
@@ -154,7 +167,9 @@ def owner_ids(db: Session, host_id: str) -> list[int]:
 def request_operation(db: Session, actor: int, host_id: str, action: str, reason: str) -> Operation:
     if action not in HOST_ACTIONS or len(reason.strip()) < 8 or len(reason) > 500:
         raise HTTPException(422, "دستور یا دلیل درخواست نامعتبر است")
-    host = db.get(Host, host_id)
+    # Lock the host itself: locking only an existing Operation row does not
+    # prevent two concurrent requests when no active operation exists.
+    host = db.scalar(select(Host).where(Host.id == host_id).with_for_update())
     if not host:
         raise HTTPException(404, "سرور پیدا نشد")
     owners = owner_ids(db, host_id)
