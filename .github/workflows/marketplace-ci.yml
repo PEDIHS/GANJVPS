@@ -1,0 +1,24 @@
+name: GANJ VPS Marketplace CI
+on:
+  push:
+    paths:
+      - 'marketplace/**'
+      - '.github/workflows/marketplace-ci.yml'
+  pull_request:
+    paths:
+      - 'marketplace/**'
+      - '.github/workflows/marketplace-ci.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r marketplace/requirements.txt
+      - run: python -m pytest -q marketplace/tests
+        env:
+          PYTHONPATH: marketplace
