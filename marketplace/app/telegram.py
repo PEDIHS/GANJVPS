@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request
 import httpx
 from app.config import config
 from app.db import SessionLocal
-from app.models import (User, Plan, Host, Slot, Subscription, Operation, OperationVote,
+from app.models import (User, AdminPermission, Plan, Host, Slot, Subscription, Operation, OperationVote,
                         BotState, ProcessedUpdate, TelegramOutbox, WalletEntry, Ticket, TicketMessage, Order)
 from app.services import (user_get_or_create, available_slots, get_balance,
                          request_operation, vote, owner_ids, purchase)
@@ -41,7 +41,27 @@ def kb(rows):
         result.append(buttons)
     return {'inline_keyboard': result}
 
-def home_keyboard(uid: int):
+BOT_ADMIN_SECTIONS = (
+    ('finance', 'reports.read', '📊 گزارش فروش'),
+    ('orders', 'orders.read', '🧾 سفارش‌ها'),
+    ('hosts', 'servers.manage', '🖥 سرورها'),
+    ('users', 'users.read', '👥 کاربران'),
+    ('tickets', 'tickets.read', '🎧 پشتیبانی'),
+    ('provisioning', 'nodes.provision', '🔧 صف نصب نودها'),
+)
+
+
+def bot_admin_scopes(db, uid: int) -> set[str]:
+    if uid == config.owner_id:
+        return {perm for _, perm, _ in BOT_ADMIN_SECTIONS}
+    if db is None:
+        return set()
+    return set(db.scalars(select(AdminPermission.permission).where(
+        AdminPermission.user_id == uid,
+        AdminPermission.permission.in_([p for _, p, _ in BOT_ADMIN_SECTIONS]))).all())
+
+
+def home_keyboard(uid: int, db=None):
     rows = [
         [('🛍 خرید نود خارج', 'shop', 'success')],
         [('📦 سرویس‌های من', 'mine', 'primary'),
@@ -49,7 +69,7 @@ def home_keyboard(uid: int):
         [('🎧 پشتیبانی', 'support'), ('👤 حساب من', 'account')],
         [('📖 راهنما', 'guide')],
     ]
-    if uid == config.owner_id:
+    if bot_admin_scopes(db, uid):
         rows.append([('⚙️ مدیریت گنج VPS', 'admin')])
     board = kb(rows)
     if config.public_base_url.startswith('https://'):
@@ -227,36 +247,41 @@ def process_update(db, update: dict):
     content = message.get("text") or ""
     if content.startswith("/start") or data == "home":
         clear_state(db, user_id)
-        return [emit(user_id, menu_message(user_id, db), home_keyboard(user_id))]
+        return [emit(user_id, menu_message(user_id, db), home_keyboard(user_id, db))]
 
     if content == '/admin' or data == 'admin':
-        if user_id != config.owner_id:
-            return [emit(user_id, 'این بخش تنها برای مدیر مجاز است.',
-                         home_keyboard(user_id))]
-        hosts = db.scalar(select(func.count()).select_from(Host)) or 0
-        users = db.scalar(select(func.count()).select_from(User)) or 0
-        orders = db.scalar(select(func.count()).select_from(Order)) or 0
-        tickets = db.scalar(select(func.count()).select_from(Ticket).where(
-            Ticket.status != 'closed')) or 0
+        scopes = bot_admin_scopes(db, user_id)
+        if not scopes:
+            return [emit(user_id, 'این بخش تنها برای مدیران مجاز است.',
+                         home_keyboard(user_id, db))]
+        sections = [(label, 'admin:' + key) for key, permission, label
+                    in BOT_ADMIN_SECTIONS if permission in scopes]
+        rows = [[item] for item in sections]
+        rows.extend(navigation())
+        if user_id == config.owner_id:
+            hosts = db.scalar(select(func.count()).select_from(Host)) or 0
+            users = db.scalar(select(func.count()).select_from(User)) or 0
+            orders = db.scalar(select(func.count()).select_from(Order)) or 0
+            metrics = (f'🖥 سرورهای ثبت‌شده: <b>{hosts}</b>\n'
+                       f'👥 کاربران: <b>{users}</b>\n'
+                       f'🧾 سفارش‌ها: <b>{orders}</b>\n\n')
+        else:
+            metrics = f'🔐 <b>حوزه‌های مجاز شما: {len(sections)}</b>\n\n'
         body = (titlebar('مرکز مدیریت گنج VPS', 'GANJ / ADMIN CONSOLE') +
-                '\n<b>نمای کلی سیستم</b>\n'
-                f'🖥 سرورهای ثبت‌شده: <b>{hosts}</b>\n'
-                f'👥 کاربران: <b>{users}</b>\n'
-                f'🧾 سفارش‌ها: <b>{orders}</b>\n'
-                f'🎧 تیکت‌های باز: <b>{tickets}</b>\n\n'
-                '<i>گزارش‌های فوری اینجا قابل مشاهده‌اند؛ تغییر محصولات و امور مالی در داشبورد امن وب انجام می‌شود.</i>')
-        board = kb([[('📊 گزارش فروش', 'admin:finance'), ('🧾 سفارش‌ها', 'admin:orders')],
-                    [('🖥 سرورها', 'admin:hosts'), ('👥 کاربران', 'admin:users')],
-                    [('🎧 پشتیبانی', 'admin:tickets')]] + navigation())
-        if config.public_base_url.startswith('https://'):
+                '\n' + metrics +
+                'فقط بخش‌هایی نمایش داده می‌شوند که مجوز آن‌ها به حساب شما داده شده است.\n'
+                '<i>عملیات مالی و فنی نیازمند مجوز مستقل هستند.</i>')
+        board = kb(rows)
+        if user_id == config.owner_id and config.public_base_url.startswith('https://'):
             board['inline_keyboard'].insert(0, [{
-                'text':'✨ بازکردن داشبورد مدیریت',
-                'web_app':{'url':config.public_base_url}}])
+                'text': '✨ بازکردن داشبورد مدیریت',
+                'web_app': {'url': config.public_base_url}}])
         return [emit(user_id, body, board)]
     if data.startswith('admin:'):
-        if user_id != config.owner_id:
-            return [emit(user_id, 'دسترسی مجاز نیست.', home_keyboard(user_id))]
         key = data.split(':', 1)[1]
+        required = {name: permission for name, permission, _ in BOT_ADMIN_SECTIONS}.get(key)
+        if required is None or required not in bot_admin_scopes(db, user_id):
+            return [emit(user_id, 'دسترسی مجاز نیست.', home_keyboard(user_id, db))]
         if key == 'finance':
             paid = db.scalar(select(func.sum(Order.amount_toman)).where(
                 Order.status == 'paid')) or 0
@@ -286,6 +311,22 @@ def process_update(db, update: dict):
             count = db.scalar(select(func.count()).select_from(Ticket).where(
                 Ticket.status != 'closed')) or 0
             body = titlebar('درخواست‌های پشتیبانی', 'SUPPORT DESK') + f'🎧 تیکت‌های باز: <b>{count}</b>\n\nبرای پاسخ به مشتریان وارد پنل مدیریت وب شو.'
+        elif key == 'provisioning':
+            from app.models import ProvisionJob
+            from app.config import config as cfg
+            jobs = db.scalars(select(ProvisionJob).order_by(
+                ProvisionJob.created_at.desc()).limit(10)).all()
+            pending = db.scalar(select(func.count()).select_from(ProvisionJob).where(
+                ProvisionJob.state.in_(['awaiting_connector', 'queued', 'preflight']))) or 0
+            body = (titlebar('مرکز نصب و تحویل نودها', 'PROVISION CONTROL') +
+                    f'📦 درخواست‌های منتظر: <b>{pending}</b>\n'
+                    f'🧪 حالت آزمایشی: <b>{"روشن" if cfg.dry_run else "خاموش"}</b>\n'
+                    f'🔒 عملیات واقعی: <b>{"غیرفعال" if not cfg.host_ops_enabled else "نیازمند Agent"}</b>\n\n'
+                    + ('\n'.join('• ' + html.escape(j.runtime_type) + ' · ' +
+                                  html.escape(j.state) + ' · ' + j.id[:8]
+                                  for j in jobs) or 'هیچ درخواست نصبی ثبت نشده است.') +
+                    '\n\n<i>از این منو فرمان نصب واقعی صادر نمی‌شود. '
+                    'هر میزبان ابتدا باید پیش‌بررسی و تست عملی را بگذراند.</i>')
         else:
             return [emit(user_id, 'این بخش پیدا نشد.', kb(navigation('admin')))]
         buttons = kb(navigation('admin'))
@@ -345,7 +386,7 @@ def process_update(db, update: dict):
     if data.startswith("tinfo:"):
         ticket = db.get(Ticket, data[6:])
         if not ticket or ticket.user_id != user_id:
-            return [emit(user_id, "تیکت پیدا نشد.", home_keyboard(user_id))]
+            return [emit(user_id, "تیکت پیدا نشد.", home_keyboard(user_id, db))]
         messages = db.scalars(select(TicketMessage).where(TicketMessage.ticket_id == ticket.id)
                       .order_by(TicketMessage.created_at.desc()).limit(5)).all()
         preview = "\n\n".join(
@@ -362,7 +403,7 @@ def process_update(db, update: dict):
     if data.startswith("treply:"):
         ticket = db.get(Ticket, data[7:])
         if not ticket or ticket.user_id != user_id or ticket.status == "closed":
-            return [emit(user_id, "این تیکت برای پاسخ‌دادن در دسترس نیست.", home_keyboard(user_id))]
+            return [emit(user_id, "این تیکت برای پاسخ‌دادن در دسترس نیست.", home_keyboard(user_id, db))]
         set_state(db, user_id, "reply_ticket", ticket.id)
         return [emit(user_id, "پاسخ خود را در یک پیام بنویسید (حداکثر ۴۰۰۰ کاراکتر).",
                      kb([[('انصراف', 'support')]]))]
@@ -596,14 +637,14 @@ def process_update(db, update: dict):
             ticket = db.get(Ticket, state.resource_id)
             if not ticket or ticket.user_id != user_id or ticket.status == "closed":
                 clear_state(db, user_id)
-                return [emit(user_id, "این تیکت برای پاسخ‌دادن در دسترس نیست.", home_keyboard(user_id))]
+                return [emit(user_id, "این تیکت برای پاسخ‌دادن در دسترس نیست.", home_keyboard(user_id, db))]
             if not 2 <= len(content.strip()) <= 4000:
                 return [emit(user_id, "پاسخ باید بین ۲ تا ۴۰۰۰ کاراکتر باشد.")]
             db.add(TicketMessage(ticket_id=ticket.id, author_id=user_id,
                                  body=content.strip(), is_staff=False))
             ticket.status = "waiting_support"
             clear_state(db, user_id)
-            return [emit(user_id, "پاسخ شما در تیکت ثبت شد.", home_keyboard(user_id)),
+            return [emit(user_id, "پاسخ شما در تیکت ثبت شد.", home_keyboard(user_id, db)),
                     emit(config.owner_id, "مشتری به تیکت گنج VPS پاسخ داد: " + ticket.id[:12])]
         if state and state.action == 'new_ticket':
             lines = content.strip().splitlines()
@@ -616,7 +657,7 @@ def process_update(db, update: dict):
             db.add(ticket)
             db.flush()
             clear_state(db, user_id)
-            return [emit(user_id, '<b>درخواست پشتیبانی ثبت شد.</b>\nشناسه: <code>' + ticket.id + '</code>\nوضعیت: در انتظار بررسی', home_keyboard(user_id))]
+            return [emit(user_id, '<b>درخواست پشتیبانی ثبت شد.</b>\nشناسه: <code>' + ticket.id + '</code>\nوضعیت: در انتظار بررسی', home_keyboard(user_id, db))]
         if state and state.action.startswith("operation_"):
             action = state.action[len("operation_"):]
             op = request_operation(db, user_id, state.resource_id, action, content)
@@ -632,7 +673,7 @@ def process_update(db, update: dict):
             clear_state(db, user_id)
             return [emit(user_id, "درخواست با ثبت دلیل رد شد.", HOME),
                     emit(op.requester_id, f"درخواست عملیات <code>{op.id[:8]}</code> رد شد. دلیل: {html.escape(content[:500])}", HOME)]
-    return [emit(user_id, "برای ادامه از منوی گنج VPS استفاده کنید.", home_keyboard(user_id))]
+    return [emit(user_id, "برای ادامه از منوی گنج VPS استفاده کنید.", home_keyboard(user_id, db))]
 
 
 async def telegram_request(method: str, payload: dict) -> bool:
