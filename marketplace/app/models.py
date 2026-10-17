@@ -217,3 +217,43 @@ class ProcessedUpdate(Base):
     __tablename__ = "processed_bot_updates"
     update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Datacenter(Base):
+    __tablename__ = "datacenters"
+    __table_args__ = (UniqueConstraint("slug", name="unique_datacenter_slug"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    name: Mapped[str] = mapped_column(String(150))
+    slug: Mapped[str] = mapped_column(String(55))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class CatalogLocation(Base):
+    __tablename__ = "catalog_locations"
+    __table_args__ = (UniqueConstraint("datacenter_id", "country_code", "city",
+                                       name="unique_dc_country_city"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    datacenter_id: Mapped[str] = mapped_column(ForeignKey("datacenters.id"), index=True)
+    country_code: Mapped[str] = mapped_column(String(2))
+    country_name: Mapped[str] = mapped_column(String(90))
+    city: Mapped[str] = mapped_column(String(120))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class HostCatalog(Base):
+    __tablename__ = "host_catalog"
+    host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id"), primary_key=True)
+    location_id: Mapped[str] = mapped_column(ForeignKey("catalog_locations.id"), index=True)
+    bandwidth_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    os_family: Mapped[str] = mapped_column(String(20), default="linux")
+
+
+class PlanCatalog(Base):
+    __tablename__ = "plan_catalog"
+    plan_id: Mapped[str] = mapped_column(ForeignKey("plans.id"), primary_key=True)
+    location_id: Mapped[str] = mapped_column(ForeignKey("catalog_locations.id"), index=True)
+    min_vcpu: Mapped[int] = mapped_column(Integer, default=1)
+    min_ram_mb: Mapped[int] = mapped_column(Integer, default=1024)
+    min_traffic_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    os_family: Mapped[str] = mapped_column(String(20), default="linux")
