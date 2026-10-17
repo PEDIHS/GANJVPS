@@ -208,3 +208,49 @@ def test_webhook_secret_and_update_deduplication(monkeypatch):
     assert again.json()['replayed'] is True
     assert len(deliveries) == 1
     assert 'گنج VPS' in deliveries[0]['text']
+
+
+def test_concurrent_purchases_cannot_spend_single_wallet_balance_twice():
+    from concurrent.futures import ThreadPoolExecutor
+
+    _host, plan = setup_host(capacity=2)
+    credit(17001, value=300000)
+
+    def attempt(i):
+        customer = login(17001)
+        return customer.post('/api/v1/orders', json={
+            'plan_id': plan,
+            'runtime': 'pasarguard',
+            'idempotency_key': f'parallel-purchase-{i}-unique'
+        }).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = sorted(pool.map(attempt, [1, 2]))
+    assert statuses == [200, 409]
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Subscription)) == 1
+        assert sum(x.delta_toman for x in db.scalars(
+            select(WalletEntry).where(WalletEntry.user_id == 17001))) == 0
+
+
+def test_concurrent_host_requests_allow_only_one_pending_operation():
+    from concurrent.futures import ThreadPoolExecutor
+
+    host, plan = setup_host()
+    for uid in (17101, 17102):
+        credit(uid)
+        buy(uid, plan)
+
+    def attempt(i):
+        customer = login(17101)
+        return customer.post('/api/v1/operations', json={
+            'host_id': host,
+            'action': 'restart_host',
+            'reason': f'planned maintenance request number {i}'
+        }).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses = sorted(pool.map(attempt, [1, 2]))
+    assert statuses == [200, 409]
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Operation)) == 1
