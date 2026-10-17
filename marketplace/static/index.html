@@ -15,15 +15,279 @@ section.page{animation:appear .2s ease both}@keyframes appear{from{opacity:.65;t
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style id="phase5-premium-design">
+/* GANJ VPS / Premium console design system v5
+   Pure presentation layer: no backend, payment or provisioning behavior altered. */
+:root {
+  --bg:#090e14;--bg2:#0c131b;--surface:#121b23;--surface2:#18242d;
+  --hover:#21323c;--edge:#27363f;--muted:#94a7af;--text:#eaf2f4;
+  --emerald:#51bea0;--emeraldDark:#16493e;--gold:#d9b37a;--goldMuted:#8c7452;
+  --red:#f28c89;--shadow:0 18px 52px rgba(0,0,0,.18);
+  --radius:18px;--focus:0 0 0 3px rgba(217,179,122,.2);
+}
+html {color-scheme:dark;scrollbar-color:#344b52 #101921}
+body{
+  background:
+    radial-gradient(ellipse 900px 480px at 85% -280px,rgba(62,139,120,.105),transparent 85%),
+    radial-gradient(ellipse 480px 410px at -6% 85%,rgba(128,101,65,.055),transparent 95%),
+    linear-gradient(180deg,#0b1118,#090e14);
+  font-family:"Vazirmatn","IRANSansX","Segoe UI",Tahoma,sans-serif;
+  line-height:1.78;font-size:13.5px;font-feature-settings:"ss01" on;
+}
+::selection{background:#478d75;color:#fff}
+.app{grid-template-columns:266px minmax(0,1fr)}
+.sidebar{
+  padding:27px 16px 18px;border-left:1px solid #28343c;
+  background:linear-gradient(180deg,#141e25,#111920 65%,#111b21);
+  box-shadow:inset 1px 0 rgba(255,255,255,.025);
+}
+.brandmark{gap:14px;padding:0 11px 32px;margin-bottom:16px;border-bottom:1px solid rgba(209,232,219,.075)}
+.logo{
+  width:47px;height:47px;border-radius:14px;font-size:23px;
+  background:linear-gradient(145deg,#244f43 0%,#14342c 58%,#122823);
+  border:1px solid #3e6c58;box-shadow:inset 0 1px rgba(255,255,255,.11),0 9px 26px #091c1760;
+  color:#e4c28e;transform:rotate(-6deg);flex:0 0 auto;
+}
+.brand-title{font-size:20px;letter-spacing:1.9px;color:#f4f5ed}
+.brand-title span{color:var(--gold)}.brandmark .tiny{letter-spacing:1.35px;font-size:9px;color:#839995}
+.nav-group{font-size:10px;letter-spacing:.06em;padding:10px 15px 9px;color:#768e92;font-weight:800}
+.navitem{
+  min-height:45px;display:flex;align-items:center;gap:13px;padding:10px 13px;
+  color:#aebdc1;border-radius:11px;font-size:13px;font-weight:650;
+  transition:background .18s ease,color .18s ease,border-color .18s ease,transform .18s ease;
+  border:1px solid transparent;position:relative;
+}
+.navitem:hover{background:rgba(85,135,129,.1);color:#f2f7f4;transform:translateX(-2px)}
+.navitem.active{
+  color:#eef9f2;background:linear-gradient(100deg,rgba(65,154,126,.2),rgba(48,110,102,.06));
+  border:1px solid rgba(90,170,143,.25);box-shadow:inset 0 1px rgba(255,255,255,.025);
+}
+.navitem.active:before{content:"";position:absolute;width:3px;top:11px;bottom:11px;right:-1px;border-radius:3px;background:var(--emerald)}
+.navitem .ico{color:#819b9d;display:grid;place-items:center;width:23px;height:23px}
+.navitem.active .ico{color:#7dd4b4}
+.navitem .ico svg,.mobile-nav .ico svg{width:20px;height:20px;display:block;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linejoin:round;stroke-linecap:round}
+.sidebar-bottom{background:linear-gradient(145deg,#1b2c30,#152125);border:1px solid #34413e;padding:17px;border-radius:14px;position:relative;overflow:hidden}
+.sidebar-bottom:before{content:"";position:absolute;right:-35px;top:-46px;width:135px;height:135px;border:1px solid rgba(203,171,120,.16);border-radius:50%}
+.sidebar-bottom b{font-size:12px;color:#e4c497;position:relative}.sidebar-bottom p{font-size:10.5px;line-height:1.9;position:relative}
+.main{padding:35px clamp(24px,3.6vw,64px) 70px;max-width:1680px}
+.topbar{margin-bottom:29px;padding-bottom:26px;border-bottom:1px solid rgba(199,219,216,.07)}
+.breadcrumb{font-size:11px;letter-spacing:.02em;color:#7d989e;display:flex;align-items:center;gap:6px}
+.page-title{font-size:clamp(23px,2.3vw,29px);font-weight:850;letter-spacing:-.6px;margin:5px 0 0}
+.top-right{gap:9px}.balance-pill,.identity-pill{min-height:44px;border-color:#30433f;background:#15242a;box-shadow:inset 0 1px rgba(255,255,255,.03)}
+.balance-pill{padding:8px 16px;color:#e7ce9f;gap:12px}
+.balance-pill>span:first-child{font-size:19px;color:var(--gold)}
+.balance-pill small{font-size:10px;color:#aeb4a4}
+.identity-pill{padding:6px 12px 6px 6px;min-width:135px}
+.avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(130deg,#326f5b,#184737);border:1px solid #49896d;box-shadow:inset 0 1px #ffffff2a}
+.identity-pill .tiny{color:#b9cec6;font-size:11px}
+section.page{animation:premium-rise .28s ease-out both}
+@keyframes premium-rise{from{opacity:.72;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+.hero{
+  min-height:255px;position:relative;overflow:hidden;isolation:isolate;
+  border:1px solid #386157;border-radius:21px;margin-bottom:23px;
+  background:linear-gradient(109deg,#18352f 0%,#142c2b 45%,#101f2a 100%);
+  box-shadow:0 23px 48px #020b0a45,inset 0 1px rgba(255,255,255,.085);
+  padding:36px clamp(27px,4vw,46px);
+}
+.hero:before{
+  content:"";position:absolute;z-index:-1;width:540px;height:540px;border-radius:50%;
+  border:1px solid rgba(183,226,195,.095);left:-160px;top:-175px;
+  box-shadow:0 0 0 45px rgba(197,202,155,.022),0 0 0 99px rgba(145,192,171,.024),
+             0 0 0 156px rgba(197,202,155,.016);
+}
+.hero:after{
+  content:"";position:absolute;left:-80px;top:-180px;width:380px;height:520px;transform:rotate(-25deg);
+  border-left:1px solid rgba(234,214,158,.1);
+  background:linear-gradient(90deg,rgba(114,174,152,.06),transparent 35%);
+  pointer-events:none;box-shadow:none;border-radius:0
+}
+.hero-content{max-width:630px}
+.eyebrow{font-size:10px;letter-spacing:.14em;color:#d9b985;font-weight:800;text-transform:uppercase}
+.hero h2{font-size:clamp(28px,3vw,37px);font-weight:850;line-height:1.47;letter-spacing:-.65px}
+.hero h2 em{color:#e5c58d}.hero p{font-size:13px;color:#b8d5ca;line-height:2;max-width:500px}
+.hero-meta{display:flex;gap:12px;align-items:center;margin-top:23px;flex-wrap:wrap}
+.hero-note{color:#afc7bd;font-size:11px;display:inline-flex;align-items:center;gap:6px}
+.hero-note:before{content:"";width:5px;height:5px;background:var(--gold);border-radius:50%}
+.heading{margin:27px 0 15px;align-items:center}
+.heading h2{font-size:17px;font-weight:820;letter-spacing:-.3px}
+.heading p{font-size:11px;color:#94a8aa;margin-top:3px}
+.grid{gap:16px}.grid.four{gap:13px}
+.card,.panel{
+  position:relative;overflow:hidden;min-width:0;
+  border:1px solid #2a3a43;
+  background:linear-gradient(150deg,#18242c 0%,#121c24 100%);
+  border-radius:var(--radius);
+  box-shadow:inset 0 1px rgba(255,255,255,.025),0 13px 30px #02060818;
+}
+.card{padding:22px}
+.panel{padding:24px}
+.card:hover{border-color:#3a595a;box-shadow:inset 0 1px rgba(255,255,255,.04),0 15px 36px #02060827}
+.card.headcard{
+  background:linear-gradient(145deg,#182830,#141e26);
+  min-height:148px;display:flex;flex-direction:column;justify-content:space-between;
+}
+.card.headcard:before{content:"";position:absolute;width:105px;height:105px;left:-55px;top:-65px;border:1px solid rgba(112,171,147,.1);border-radius:50%;pointer-events:none}
+.headcard .stat-caption{color:#acbdc2;font-size:11px;font-weight:650}
+.headcard .stat-value{font-size:27px;letter-spacing:-.55px;margin:9px 0 3px}
+.headcard .stat-trend{font-size:10px;color:#819b9e}
+.headcard .metric-top{display:flex;justify-content:space-between;align-items:center}
+.metric-icon{width:32px;height:32px;display:grid;place-items:center;border-radius:10px;background:#223d39;color:#92d8bd;border:1px solid #33574e;font-size:17px}
+.metric-icon.gold{background:#362d24;border-color:#594831;color:#e3c38d}
+.stat-value{color:#f3f5f3;font-weight:850;font-size:26px}
+.stat-caption{color:#91a7ac;font-size:11px;letter-spacing:.01em}
+.stat-trend{font-size:10px}
+.card h3{font-size:16px;letter-spacing:-.2px;color:#f0f5f1;margin:12px 0 4px}
+.card p{font-size:12px;line-height:2;color:#9eb2b4}
+.card .toprow{align-items:center}
+.card-foot{margin-top:18px;padding-top:15px;border-color:#2c3a40}
+.btn{border-radius:10px;min-height:43px;font-weight:740;padding:10px 17px;gap:9px;background:#245748;border-color:#366f5a;box-shadow:inset 0 1px rgba(255,255,255,.045)}
+.btn:hover:not(:disabled){background:#2b715e;transform:translateY(-1px)}
+.btn.primary{background:linear-gradient(135deg,#e3c38c,#c7a166);color:#17251f;border:1px solid #e0c28f;box-shadow:inset 0 1px rgba(255,255,255,.3),0 5px 18px #c79a4930}
+.btn.primary:hover:not(:disabled){background:linear-gradient(135deg,#f0d5a5,#d1a970)}
+.btn.ghost{background:#1b2a32;border-color:#34454c;color:#c9d8d4}
+.btn.ghost:hover:not(:disabled){background:#263943;color:#f0f5f3}
+.btn.small{font-size:11px;min-height:33px;padding:6px 11px}
+.btn.danger{background:#3b2628;border-color:#643c43;color:#ffb6af}
+.btn:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+.chip{background:#1e3431;border-color:#325448;color:#9adfc2;border-radius:7px;font-weight:720;padding:4px 10px}
+.chip.gold{color:#e5c58d;background:#352b22;border-color:#68513a}
+.chip.alert{background:#392725;color:#f1b5ae;border-color:#75443e}
+.chip.neutral{background:#22313a;border-color:#3a4b54;color:#b5c8c9}
+.chip .dot{background:currentColor;width:5px;height:5px;opacity:.85}
+.price{font-size:25px;color:#e5c68e;letter-spacing:-.4px;margin-top:17px}
+.price span{font-size:10px;color:#879d9e}
+.spec{border-color:#34444a;background:#17252c;color:#aec4c5;border-radius:8px;padding:6px 9px}
+.empty{border:1px dashed #3a4b51;border-radius:17px;background:linear-gradient(135deg,#16232b,#111b24);padding:42px 25px}
+.empty-symbol{font-size:30px;color:#d4b079}.empty b{color:#e8f1ee}
+.listrow{padding:16px 0;border-color:#2c3a40}
+.listrow .mainlabel{font-weight:750;color:#e3eeea}
+.listrow .sub{font-size:10px;color:#93a6a9}
+.line{background:#2a3a43}
+.muted,.smallprint{color:#9aaeb0}.softbox{background:#101b22;border-color:#31434a}
+.warning{border-right:3px solid #caa86e;background:#322b2338;color:#d2c2a3;font-size:11.5px;line-height:2;border-radius:10px;padding:13px 16px}
+.toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:8px;border:1px solid #304049;background:#131f27;border-radius:13px;margin-bottom:19px}
+.tab{border:1px solid transparent;background:transparent;color:#a3b7b9;font-weight:700;font-size:11.5px;border-radius:9px;padding:9px 13px}
+.tab:hover{background:#24343d;color:#e8f2ed}
+.tab.active{background:#295d4e;border-color:#3a806a;color:#ecfcf2;box-shadow:0 4px 12px #0717133b}
+.tablewrap{border-radius:14px;border:1px solid #2e4148;background:#141e26;box-shadow:0 12px 30px #00000015}
+table{font-size:11.5px;min-width:640px}
+th{background:#1b2b34;color:#bccbc9;font-size:11px;font-weight:770;position:sticky;top:0;z-index:1}
+td,th{padding:15px 15px;border-color:#293b42}
+tbody tr:hover{background:#20313a70}
+tbody tr{transition:background .15s}
+td{color:#c5d5d4}
+.field{color:#b8c8c9;font-size:11px;gap:8px;margin-bottom:17px}
+.field input,.field select,.field textarea{
+  background:#101b23;border:1px solid #344950;border-radius:10px;color:#ebf2f2;
+  min-height:45px;padding:11px 13px;
+  transition:border-color .15s,box-shadow .15s;
+}
+.field input:hover,.field textarea:hover,.field select:hover{border-color:#52676a}
+.field input:focus,.field textarea:focus,.field select:focus{border-color:#c8a86e;box-shadow:var(--focus)}
+.field input::placeholder,.field textarea::placeholder{color:#71878c;opacity:1}
+.modal-back{background:#020608ce;backdrop-filter:blur(7px);padding:18px}
+.modal{border:1px solid #47605e;background:linear-gradient(160deg,#1a2931,#121e26);width:min(100%,530px);border-radius:21px;box-shadow:0 34px 90px #000b0ad9}
+.modal h2{font-size:19px}.modal-sub{color:#97afb1;font-size:11px}
+.choice{background:#13242b;border-color:#34504e;color:#ccd9d6;border-radius:11px}
+.choice.selected{background:#27362e;border-color:#c29e65;color:#ebcb97}
+.toast{background:#193b33;border-color:#4f947c;border-radius:11px;color:#e7f6ed;z-index:60;box-shadow:0 20px 50px #000a}
+.toast.error{background:#452a2c;border-color:#a25f62}
+.auth-shell{background:radial-gradient(ellipse 650px 450px at 50% 15%,rgba(44,115,95,.17),transparent),transparent}
+.auth-card{width:100%;max-width:485px;border:1px solid #426158;background:linear-gradient(150deg,#1a292e,#111c24);padding:42px;border-radius:23px;box-shadow:0 25px 100px #0007,inset 0 1px #ffffff10}
+.auth-card .logo{width:58px;height:58px;font-size:30px}.auth-card h1{font-size:29px;letter-spacing:1px}
+.auth-card p{font-size:12px;line-height:2}
+.auth-card .warning{text-align:right}
+.mobile-nav{display:none}
+@media(max-width:1200px){
+  .app{grid-template-columns:238px minmax(0,1fr)}
+  .main{padding:30px 24px 55px}
+  .sidebar{padding:26px 13px 15px}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .grid.four{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:760px){
+  .app{display:block}
+  .sidebar{display:none}
+  .main{padding:21px 16px calc(108px + env(safe-area-inset-bottom))}
+  .topbar{gap:10px;margin-bottom:24px;padding-bottom:19px}
+  .top-right{gap:7px}
+  .breadcrumb{font-size:9px}.page-title{font-size:21px;line-height:1.4}
+  .balance-pill{padding:7px 11px;min-height:39px;gap:5px;font-size:12px}
+  .balance-pill small{display:none}
+  .identity-pill{padding:4px;min-height:39px;min-width:auto}
+  .identity-pill .tiny{display:none}
+  .avatar{width:30px;height:30px}
+  .hero{min-height:232px;padding:27px 25px;border-radius:18px}
+  .hero h2{font-size:28px}
+  .hero p{font-size:11.5px;line-height:1.9}
+  .hero:before{left:-250px;top:-190px}
+  .hero-meta{gap:9px}
+  .grid,.grid.two{grid-template-columns:1fr;gap:12px}
+  .grid.four{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .card{padding:18px;border-radius:15px}
+  .card.headcard{min-height:132px;padding:15px}
+  .headcard .stat-value{font-size:22px}
+  .metric-icon{width:28px;height:28px}
+  .heading{margin:23px 0 12px}
+  .heading h2{font-size:16px}
+  .panel{padding:19px;border-radius:16px}
+  .toolbar{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;padding:7px;margin-bottom:15px}
+  .tab{white-space:nowrap}
+  .mobile-nav{
+    position:fixed;bottom:8px;left:10px;right:10px;z-index:35;
+    display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;
+    background:rgba(21,32,40,.96);
+    padding:11px 7px max(11px,env(safe-area-inset-bottom));
+    border:1px solid #39504f;border-radius:19px;
+    box-shadow:0 18px 45px #000b;
+    backdrop-filter:blur(20px);
+  }
+  .mobile-nav button{font-size:9.5px;gap:5px;min-height:42px;font-weight:700;color:#91a9aa}
+  .mobile-nav button .ico{display:grid;place-items:center;color:inherit}
+  .mobile-nav button.active{color:#e9c998}
+  .mobile-nav button.active .ico{color:#e9c998}
+  .mobile-nav button svg{width:20px;height:20px}
+  .toast{bottom:100px;left:16px;right:16px}
+  .modal{padding:21px}
+  .auth-card{padding:30px 24px}
+}
+@media(max-width:365px){
+  .main{padding-left:11px;padding-right:11px}
+  .hero h2{font-size:24px}
+  .balance-pill{font-size:10px}
+  .headcard .stat-value{font-size:19px}
+  .mobile-nav{left:6px;right:6px}
+}
+@media(prefers-reduced-motion:reduce){
+  .navitem:hover{transform:none}
+  section.page{animation:none}
+}
+
+/* CSS-only infrastructure illustration: no image assets or external dependencies. */
+.hero-art{position:absolute;left:60px;top:28px;width:290px;height:240px;pointer-events:none;z-index:0;display:grid;place-items:center;perspective:500px}
+.hero-art:before{content:"";position:absolute;width:258px;height:258px;border:1px dashed rgba(165,215,186,.16);border-radius:50%;inset:-11px 16px auto}
+.hero-art:after{content:"";position:absolute;width:169px;height:169px;border:1px solid rgba(219,191,131,.16);border-radius:50%;left:60px;top:35px}
+.server-rack{width:144px;padding:16px 13px;display:grid;gap:11px;transform:rotateY(-16deg) rotateX(7deg) rotate(-3deg);border:1px solid #4c7466;border-radius:15px;background:linear-gradient(150deg,#21423d,#13292e 78%);box-shadow:16px 18px 0 #0c2027,18px 18px 0 1px #35534e,0 28px 80px #040e1270,inset 0 1px #ffffff19;z-index:2}
+.server-rack span{height:24px;display:flex;align-items:center;gap:9px;padding:0 10px;border:1px solid #355a54;border-radius:7px;background:#10252a;box-shadow:inset 0 1px #ffffff07}
+.server-rack span i{height:6px;width:6px;background:#73ceaa;border-radius:50%;box-shadow:0 0 9px #55c393aa}
+.server-rack span:nth-child(2) i{background:#d8b57b;box-shadow:0 0 8px #d8b57b66}
+.server-rack span b{width:44px;height:3px;border-radius:3px;background:linear-gradient(90deg,#46736a,#24463f)}
+.server-rack span b:after{content:"";display:block;width:22px;height:3px;border-radius:3px;transform:translateX(-55px);background:#365950}
+.hero-art .orbit-label{position:absolute;left:-10px;bottom:12px;border:1px solid #527d6a;background:#1b3936a8;color:#c3e2d4;border-radius:8px;font-size:9px;font-family:ui-monospace,Consolas,monospace;letter-spacing:1.4px;padding:6px 11px;z-index:3}
+.hero-content{position:relative;z-index:3}
+@media(max-width:1200px){.hero-art{left:5px;opacity:.65;transform:scale(.8);transform-origin:left center}.hero-content{max-width:570px}}
+@media(max-width:900px){.hero-art{opacity:.25;left:-65px}}
+@media(max-width:760px){.hero-art{display:none}}
+</style>
 </head>
 <body>
 <div id="auth" class="auth-shell"><div class="auth-card"><div class="logo">◆</div><h1>GANJ <span style="color:var(--gold)">VPS</span></h1><div class="eyebrow">YOUR INFRASTRUCTURE, SIMPLIFIED</div><p>یک فضای مطمئن برای خرید نود خارج، مدیریت سرویس‌ها، رأی‌گیری مالکان مشترک و مشاهده گردش مالی.</p><div class="warning">دسترسی به حساب فقط از داخل ربات رسمی تلگرام امکان‌پذیر است. برای نود اشتراکی رمز root یا SSH درخواست نمی‌شود.</div><button id="loginBtn" class="btn primary block">ورود امن با تلگرام ←</button><p class="smallprint" id="signinError"></p></div></div>
 <div id="app" class="app hidden">
 <aside class="sidebar"><div class="brandmark"><div class="logo">◆</div><div><div class="brand-title">GANJ <span>VPS</span></div><div class="tiny">CLOUD INFRASTRUCTURE</div></div></div><div class="nav-group">حساب کاربری</div>
-<button class="navitem active" data-page="overview"><span class="ico">◫</span> نمای کلی</button><button class="navitem" data-page="shop"><span class="ico">▦</span> فروشگاه نود</button><button class="navitem" data-page="services"><span class="ico">▤</span> سرویس‌های من</button><button class="navitem" data-page="wallet"><span class="ico">◈</span> کیف پول</button><button class="navitem" data-page="votes"><span class="ico">◎</span> رأی‌گیری مشترک</button><button class="navitem" data-page="tickets"><span class="ico">◇</span> پشتیبانی</button><div id="adminGroup" class="hidden"><div class="nav-group" style="margin-top:22px">مدیریت سیستم</div><button class="navitem" data-page="admin"><span class="ico">▧</span> مدیریت و حسابداری</button></div><div class="sidebar-bottom"><b>گنج VPS · نسخه توسعه</b><p>نصب نودها و عملیات میزبان تا تکمیل تست فنی غیرفعال‌اند.</p></div></aside>
-<main class="main"><div class="topbar"><div><div class="breadcrumb">GANJ VPS / <span id="crumb">نمای کلی</span></div><h1 class="page-title" id="pageTitle">داشبورد من</h1></div><div class="top-right"><div class="balance-pill"><span>◈</span><span id="headerBalance">—</span><small>تومان</small></div><div class="identity-pill"><div class="avatar" id="avatar">G</div><div class="tiny" id="uid">در حال اتصال</div></div></div></div>
+<button class="navitem active" data-page="overview"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span> نمای کلی</button><button class="navitem" data-page="shop"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M9 10v11"/><path d="M13 15h5"/></svg></span> فروشگاه نود</button><button class="navitem" data-page="services"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span> سرویس‌های من</button><button class="navitem" data-page="wallet"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="2"/><path d="M3 10h18M16 15h2M7 3h10"/></svg></span> کیف پول</button><button class="navitem" data-page="votes"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg></span> رأی‌گیری مشترک</button><button class="navitem" data-page="tickets"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 9h8M8 13h5"/></svg></span> پشتیبانی</button><div id="adminGroup" class="hidden"><div class="nav-group" style="margin-top:22px">مدیریت سیستم</div><button class="navitem" data-page="admin"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4h16v16H4zM4 10h16M10 10v10"/><path d="M13.5 15h3"/></svg></span> مدیریت و حسابداری</button></div><div class="sidebar-bottom"><b>GANJ VPS · CLOUD CONSOLE</b><p>خرید و مدیریت نودهای مشترک در یک فضای حرفه‌ای.</p></div></aside>
+<main class="main"><div class="topbar"><div><div class="breadcrumb"><span style="color:var(--gold);letter-spacing:1.5px">GANJ VPS</span><span style="opacity:.45">/</span><span id="crumb">نمای کلی</span></div><h1 class="page-title" id="pageTitle">داشبورد من</h1></div><div class="top-right"><div class="balance-pill"><span>◈</span><span id="headerBalance">—</span><small>تومان</small></div><div class="identity-pill"><div class="avatar" id="avatar">G</div><div class="tiny" id="uid">در حال اتصال</div></div></div></div>
 <section id="overview" class="page"></section><section id="shop" class="page hidden"></section><section id="services" class="page hidden"></section><section id="wallet" class="page hidden"></section><section id="votes" class="page hidden"></section><section id="tickets" class="page hidden"></section><section id="admin" class="page hidden"></section>
-</main><nav class="mobile-nav"><button data-page="overview" class="active"><span class="ico">◫</span>خانه</button><button data-page="shop"><span class="ico">▦</span>فروشگاه</button><button data-page="services"><span class="ico">▤</span>سرویس‌ها</button><button data-page="wallet"><span class="ico">◈</span>کیف پول</button><button data-page="admin" id="mobileAdmin" class="hidden"><span class="ico">▧</span>مدیریت</button><button data-page="tickets" id="mobileSupport"><span class="ico">◇</span>پشتیبانی</button></nav></div>
+</main><nav class="mobile-nav"><button data-page="overview" class="active"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>خانه</button><button data-page="shop"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M9 10v11"/><path d="M13 15h5"/></svg></span>فروشگاه</button><button data-page="services"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span>سرویس‌ها</button><button data-page="wallet"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="15" rx="2"/><path d="M3 10h18M16 15h2M7 3h10"/></svg></span>کیف پول</button><button data-page="admin" id="mobileAdmin" class="hidden"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4h16v16H4zM4 10h16M10 10v10"/><path d="M13.5 15h3"/></svg></span>مدیریت</button><button data-page="tickets" id="mobileSupport"><span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 9h8M8 13h5"/></svg></span>پشتیبانی</button></nav></div>
 <div id="modalRoot"></div><div id="toast" class="toast" role="status" aria-live="polite"></div>
 <script>
 'use strict';
@@ -43,7 +307,7 @@ async function signin(){try{if(!tg?.initData)throw Error('از دکمه Mini App
 async function init(){try{me=await api('/api/v1/me');csrf=me.csrf;$('auth').classList.add('hidden');$('app').classList.remove('hidden');$('headerBalance').textContent=money(me.balance_toman);$('uid').textContent='شناسه '+me.id;$('avatar').textContent=String(me.id).slice(-1);if(me.is_owner){$('adminGroup').classList.remove('hidden');$('mobileAdmin').classList.remove('hidden');$('mobileSupport').classList.add('hidden')}await go('overview')}catch(e){$('signinError').textContent='برای ورود، مینی‌اپ را از داخل ربات باز کنید.'}}
 async function refreshMe(){me=await api('/api/v1/me');csrf=me.csrf;$('headerBalance').textContent=money(me.balance_toman)}
 async function go(name){if(name==='admin'&&!me?.is_owner)return toast('دسترسی مدیریتی مجاز نیست',true);currentPage=name;for(const section of document.querySelectorAll('section.page'))section.classList.toggle('hidden',section.id!==name);for(const b of document.querySelectorAll('[data-page]'))b.classList.toggle('active',b.dataset.page===name);$('crumb').textContent=headings[name][0];$('pageTitle').textContent=headings[name][1];window.scrollTo({top:0,behavior:'smooth'});try{await ({overview:renderOverview,shop:renderShop,services:renderServices,wallet:renderWallet,votes:renderVotes,tickets:renderTickets,admin:renderAdmin})[name]()}catch(e){toast(e.message,true)}}
-async function renderOverview(){const [subs,plans,ops]=await Promise.all([api('/api/v1/subscriptions'),api('/api/v1/catalog'),api('/api/v1/operations')]);const active=subs.filter(s=>['active','provisioning'].includes(s.status)).length;const pending=ops.filter(o=>o.eligible_to_vote&&o.status==='pending_approval').length;$('overview').innerHTML=`<div class="hero"><div class="hero-content"><div class="eyebrow">GANJ VPS · CLOUD NODES</div><h2>زیرساخت مطمئن،<br><em>مدیریت ساده‌تر.</em></h2><p>نودهای خارج با مدیریت مستقل و کنترل اشتراکی شفاف؛ همه چیز از خرید تا درخواست‌های مشترک در یک داشبورد.</p>${btn('مشاهده نودها  ←','goto:shop','primary')}</div></div><div class="grid four"><div class="card headcard"><div class="stat-caption">سرویس‌های من</div><div class="stat-value">${money(active)}</div><div class="stat-trend">فعال و در حال آماده‌سازی</div></div><div class="card headcard"><div class="stat-caption">اعتبار کیف پول</div><div class="stat-value">${money(me.balance_toman)}</div><div class="stat-trend">تومان</div></div><div class="card headcard"><div class="stat-caption">پلن‌های موجود</div><div class="stat-value">${money(plans.filter(x=>x.available>0).length)}</div><div class="stat-trend">برای خرید</div></div><div class="card headcard"><div class="stat-caption">رأی‌های منتظر</div><div class="stat-value">${money(pending)}</div><div class="stat-trend">درخواست هم‌سرورها</div></div></div><div class="heading"><div><h2>دسترسی سریع</h2><p>برای شروع، یکی از بخش‌ها را انتخاب کن</p></div></div><div class="grid"><div class="card"><div class="toprow">${tag('فروشگاه','gold')}<span class="ico">▦</span></div><h3>خرید نود خارج</h3><p>مقایسه ظرفیت‌های دو و سه‌نفره و انتخاب پنل سازگار.</p><div class="card-foot">${btn('مشاهده فروشگاه ←','goto:shop')}</div></div><div class="card"><div class="toprow">${tag('اشتراک‌ها')}<span class="ico">▤</span></div><h3>سرورهای من</h3><p>مشخصات اتصال، وضعیت آماده‌سازی و زمان پایان سرویس.</p><div class="card-foot">${btn('مشاهده سرویس‌ها ←','goto:services')}</div></div><div class="card"><div class="toprow">${tag(pending?'در انتظار شما':'مدیریت مشترک','gold')}<span class="ico">◎</span></div><h3>درخواست‌های مشترک</h3><p>تصمیم‌گیری شفاف درباره ریستارت یا تغییر IP سرور.</p><div class="card-foot">${btn('مدیریت درخواست‌ها ←','goto:votes')}</div></div></div>`}
+async function renderOverview(){const [subs,plans,ops]=await Promise.all([api('/api/v1/subscriptions'),api('/api/v1/catalog'),api('/api/v1/operations')]);const active=subs.filter(s=>['active','provisioning'].includes(s.status)).length;const pending=ops.filter(o=>o.eligible_to_vote&&o.status==='pending_approval').length;$('overview').innerHTML=`<div class="hero"><div class="hero-content"><div class="eyebrow">GANJ VPS · CLOUD NODES</div><h2>مدیریت زیرساخت،<br><em>به سبک حرفه‌ای.</em></h2><p>سرویس‌ها، صورتحساب‌ها و درخواست‌های مشترک؛ همه در یک فضای امن، سریع و منظم.</p><div class="hero-meta">${btn('کاوش سرویس‌های ابری  ←','goto:shop','primary')}<span class="hero-note">کنترل متمرکز • دسترسی شخصی</span></div></div><div class="hero-art" aria-hidden="true"><div class="server-rack"><span><i></i><b></b></span><span><i></i><b></b></span><span><i></i><b></b></span><span><i></i><b></b></span></div><span class="orbit-label">GANJ / VPS</span></div></div><div class="heading"><div><h2>وضعیت حساب شما</h2><p>نمای کلی منابع و فعالیت‌های ثبت‌شده</p></div><span class="chip neutral">نمای شخصی</span></div><div class="grid four"><div class="card headcard"><div class="metric-top"><div class="stat-caption">سرویس‌های من</div><span class="metric-icon">◉</span></div><div class="stat-value">${money(active)}</div><div class="stat-trend">فعال و در حال آماده‌سازی</div></div><div class="card headcard"><div class="metric-top"><div class="stat-caption">اعتبار کیف پول</div><span class="metric-icon">◇</span></div><div class="stat-value">${money(me.balance_toman)}</div><div class="stat-trend">تومان</div></div><div class="card headcard"><div class="metric-top"><div class="stat-caption">پلن‌های موجود</div><span class="metric-icon">▦</span></div><div class="stat-value">${money(plans.filter(x=>x.available>0).length)}</div><div class="stat-trend">برای خرید</div></div><div class="card headcard"><div class="metric-top"><div class="stat-caption">رأی‌های منتظر</div><span class="metric-icon">◎</span></div><div class="stat-value">${money(pending)}</div><div class="stat-trend">درخواست هم‌سرورها</div></div></div><div class="heading"><div><h2>میان‌برهای مدیریتی</h2><p>کارهای روزانه را بدون خروج از داشبورد انجام بده</p></div></div><div class="grid"><div class="card"><div class="toprow">${tag('فروشگاه','gold')}<span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 10h18M9 10v11"/><path d="M13 15h5"/></svg></span></div><h3>خرید نود خارج</h3><p>مقایسه ظرفیت‌های دو و سه‌نفره و انتخاب پنل سازگار.</p><div class="card-foot">${btn('مشاهده فروشگاه ←','goto:shop')}</div></div><div class="card"><div class="toprow">${tag('اشتراک‌ها')}<span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span></div><h3>سرورهای من</h3><p>مشخصات اتصال، وضعیت آماده‌سازی و زمان پایان سرویس.</p><div class="card-foot">${btn('مشاهده سرویس‌ها ←','goto:services')}</div></div><div class="card"><div class="toprow">${tag(pending?'در انتظار شما':'مدیریت مشترک','gold')}<span class="ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg></span></div><h3>درخواست‌های مشترک</h3><p>تصمیم‌گیری شفاف درباره ریستارت یا تغییر IP سرور.</p><div class="card-foot">${btn('مدیریت درخواست‌ها ←','goto:votes')}</div></div></div>`}
 async function renderShop(){const data=await api('/api/v1/catalog');$('shop').innerHTML=`<div class="hero" style="min-height:210px"><div class="hero-content"><div class="eyebrow">NODE MARKETPLACE</div><h2>پلن مناسب خودت را پیدا کن</h2><p>قیمت شفاف، ظرفیت محدود و انتخاب نوع نود هنگام سفارش. تحویل فنی تنها پس از راه‌اندازی اتصال انجام می‌شود.</p></div></div><div class="heading"><div><h2>نودهای خارج</h2><p>موجودی واقعی سرورهای تعریف‌شده در سیستم</p></div><span class="chip gold">${money(data.length)} پلن</span></div><div class="grid">${data.length?data.map(p=>`<div class="card"><div class="toprow">${tag(p.region,'gold')}${tag(p.available?'موجود: '+money(p.available):'ناموجود',p.available?'':'alert')}</div><h3>${safe(p.name)}</h3><p>نود ${money(p.capacity)} نفره · ${money(p.term_days)} روزه</p><div class="specs"><span class="spec">اشتراک مستقل</span><span class="spec">پاسارگارد / ربکا / مرزبان</span></div><div class="price">${money(p.price_toman)} <span>تومان / دوره</span></div><div class="card-foot"><button class="btn primary block" data-action="choose:${safe(p.id)}" ${p.available?'':'disabled'}>${p.available?'انتخاب این پلن  ←':'اتمام موجودی'}</button></div></div>`).join(''):empty('فعلاً پلن فعالی وجود ندارد','بعد از ثبت سرور و قیمت توسط مدیریت، پلن‌ها اینجا نشان داده می‌شوند.')}</div>`}
 async function choosePlan(id){const data=await api('/api/v1/catalog');selectedPlan=data.find(p=>p.id===id);if(!selectedPlan||!selectedPlan.available)return toast('این پلن فعلاً موجود نیست',true);selectedRuntime='pasarguard';showPurchaseModal()}
 function showPurchaseModal(){const p=selectedPlan;const types=[['pasarguard','پاسارگارد','PasarGuard'],['rebecca','ربکا','Rebecca'],['marzban','مرزبان','Marzban']];showModal(`<div class="toprow"><h2>ثبت سفارش نود</h2>${btn('×','modal:close','ghost small')}</div><p class="modal-sub">${safe(p.name)} · ${safe(p.region)}</p><div class="smallprint">پنل مقصد را انتخاب کنید</div><div class="choicegrid">${types.map(([id,fa,en])=>`<button class="choice ${id===selectedRuntime?'selected':''}" data-action="runtime:${id}"><b>${fa}</b><small>${en}</small></button>`).join('')}</div><div class="softbox"><div class="listrow"><span>ظرفیت میزبان</span><b>${money(p.capacity)} نفره</b></div><div class="listrow"><span>اعتبار سرویس</span><b>${money(p.term_days)} روز</b></div><div class="listrow"><span>اعتبار کیف پول</span><b>${money(me.balance_toman)} تومان</b></div><div class="listrow"><span>مبلغ نهایی</span><b style="color:var(--gold)">${money(p.price_toman)} تومان</b></div></div><div class="warning">پس از پرداخت، سفارش در وضعیت «در حال آماده‌سازی» قرار می‌گیرد؛ تا نصب و تست اتصال نهایی، سرویس فعال اعلام نمی‌شود.</div><div class="modal-actions">${btn('تأیید و پرداخت از کیف پول','purchase','primary')}${btn('انصراف','modal:close')}</div>`)}
@@ -56,7 +320,7 @@ async function castVote(id,choice){if(choice==='reject'){showModal(`<h2>رد د�
 async function submitVote(id,choice,reason){try{await api('/api/v1/operations/'+encodeURIComponent(id)+'/votes',{method:'POST',body:JSON.stringify({choice,reason})});closeModal();toast('رأی شما ثبت شد');await renderVotes()}catch(e){toast(e.message,true)}}
 async function renderTickets(){const data=await api('/api/v1/tickets');$('tickets').innerHTML=`<div class="grid two"><div class="panel"><h2 style="margin-top:0">تیکت جدید</h2><p class="muted">مشکل خود را با جزئیات ثبت کنید تا پشتیبانی پیگیری کند.</p><form id="ticketForm"><label class="field">موضوع<input name="subject" minlength="4" maxlength="200" required placeholder="مثلاً اختلال در اتصال نود"></label><label class="field">توضیحات<textarea name="message" minlength="10" maxlength="4000" required placeholder="مشخصات مشکل و زمان وقوع را بنویسید"></textarea></label><button class="btn primary" type="submit">ارسال درخواست ←</button></form></div><div><div class="heading" style="margin-top:0"><div><h2>درخواست‌های من</h2><p>گفت‌وگوی دوطرفه و پیگیری وضعیت</p></div></div><div class="card">${data.length?data.map(t=>`<div class="listrow"><div><div class="mainlabel">${safe(t.subject)}</div><div class="sub mono">${safe(t.id.slice(0,10))}</div></div><div class="row-actions">${tag(t.status)}${btn('گفت‌وگو','ticket:'+t.id,'ghost small')}</div></div>`).join(''):empty('تیکتی ندارید','تیکت‌های شما پس از ثبت اینجا نمایش داده می‌شوند.')}</div></div></div>`}
 const adminTabs=[['overview','داشبورد'],['hosts','سرورها'],['plans','محصولات'],['users','کاربران'],['orders','سفارش‌ها'],['finance','حسابداری'],['tickets','تیکت‌ها'],['audit','لاگ‌ها']];
-async function renderAdmin(){if(!me?.is_owner)return; $('admin').innerHTML=`<div class="heading"><div><h2>پنل مدیریتی</h2><p>نمای متمرکز فروش، زیرساخت و حسابداری</p></div></div><div class="toolbar">${adminTabs.map(([id,title])=>`<button class="tab ${id===adminTab?'active':''}" data-action="adminTab:${id}">${title}</button>`).join('')}</div><div id="adminPanel"></div>`;await renderAdminTab()}
+async function renderAdmin(){if(!me?.is_owner)return; $('admin').innerHTML=`<div class="heading"><div><h2>مرکز فرماندهی گنج</h2><p>فروش، زیرساخت و حسابداری؛ در یک نمای منظم</p></div></div><div class="toolbar">${adminTabs.map(([id,title])=>`<button class="tab ${id===adminTab?'active':''}" data-action="adminTab:${id}">${title}</button>`).join('')}</div><div id="adminPanel"></div>`;await renderAdminTab()}
 function table(headers,rows){return `<div class="tablewrap"><table><thead><tr>${headers.map(h=>`<th>${safe(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${headers.length}" style="text-align:center;color:var(--muted)">اطلاعاتی موجود نیست</td></tr>`}</tbody></table></div>`}
 async function renderAdminTab(){for(const b of document.querySelectorAll('.tab'))b.classList.toggle('active',b.dataset.action==='adminTab:'+adminTab);const panel=$('adminPanel');panel.innerHTML='<div class="empty">در حال بارگیری…</div>';if(adminTab==='overview'){const [s,f]=await Promise.all([api('/api/v1/admin/summary'),api('/api/v1/admin/finance')]);panel.innerHTML=`<div class="grid four">${[['کاربران',s.users],['سرورها',s.hosts],['سفارش‌ها',s.orders],['اشتراک‌ها',s.subscriptions]].map(([k,v])=>`<div class="card"><div class="stat-caption">${k}</div><div class="stat-value">${money(v)}</div></div>`).join('')}</div><div class="heading"><h2>نمای کلی مالی</h2></div><div class="grid two"><div class="card"><div class="stat-caption">جمع مبلغ سفارش‌های پرداخت‌شده</div><div class="stat-value">${money(f.paid_order_total_toman)}</div><div class="tiny">تومان (نه سود خالص)</div></div><div class="card"><div class="stat-caption">هزینه ماهانه ثبت‌شده میزبان‌ها</div><div class="stat-value">${money(f.monthly_host_cost_toman)}</div><div class="tiny">تومان در ماه</div></div></div><div class="warning">${safe(f.note)}</div>`}
 else if(adminTab==='hosts'){const data=await api('/api/v1/admin/hosts');panel.innerHTML=`<div class="grid two"><div class="panel"><h2>تعریف سرور مادر</h2><p class="muted">سرورها در ابتدا فقط در موجودی ثبت می‌شوند و نصب خودکار فعال نیست.</p><form id="hostForm" class="formgrid"><label class="field">نام سرور<input name="name" minlength="2" required></label><label class="field">لوکیشن<input name="region" minlength="2" required placeholder="DE"></label><label class="field">IPv4 / IPv6<input name="ip" required placeholder="203.0.113.50" dir="ltr"></label><label class="field">ظرفیت<select name="capacity"><option value="2">۲ نفره</option><option value="3">۳ نفره</option></select></label><label class="field">vCPU<input type="number" name="cpu" value="2" min="1" required></label><label class="field">RAM مگابایت<input type="number" name="ram_mb" value="4096" min="512" required></label><label class="field">RAM رزرو میزبان<input type="number" name="reserved_ram_mb" value="512" min="0" required></label><label class="field">هزینه ماهانه تومان<input type="number" name="monthly_cost" value="0" min="0" required></label><div class="full"><button class="btn primary" type="submit">ثبت سرور</button></div></form></div><div><h2>سرورهای ثبت‌شده</h2><div class="card">${data.length?data.map(h=>`<div class="listrow"><div><b>${safe(h.name)}</b><div class="sub">${safe(h.region)} · <span class="mono">${safe(h.ip)}</span></div></div><div><b>${h.occupied}/${h.capacity}</b><div class="sub">${money(h.monthly_cost)} تومان</div></div></div>`).join(''):empty('سروری ثبت نشده','از فرم سمت راست اولین سرور مادر را تعریف کنید.')}</div></div></div>`}
