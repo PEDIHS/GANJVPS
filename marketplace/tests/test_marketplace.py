@@ -375,3 +375,50 @@ def test_admin_support_and_plan_rbac_and_invalid_status():
     assert client.post('/api/v1/admin/tickets/' + tid + '/reply',
                        json={'message': ' '}, headers=admin).status_code == 422
     assert len(customer.get('/api/v1/tickets/' + tid).json()['messages']) == 0
+# Append the following pytest cases to marketplace/tests/test_marketplace.py
+# (they reuse the module's fixtures, TestClient, SessionLocal and imports).
+
+
+def test_durable_bot_outbox_marks_delivery_and_replay_dedupes(monkeypatch):
+    from app import telegram
+    from app.models import TelegramOutbox
+    calls = []
+    async def send(message):
+        calls.append(message)
+        return True
+    monkeypatch.setattr(telegram, 'send_message', send)
+    update = {'update_id': 990011, 'message': {'text': '/start',
+              'from': {'id': 99001, 'first_name': 'tester'},
+              'chat': {'id': 99001, 'type': 'private'}}}
+    headers = {'X-Telegram-Bot-Api-Secret-Token': os.environ['TELEGRAM_WEBHOOK_SECRET']}
+    assert client.post('/telegram/webhook', json=update, headers=headers).status_code == 200
+    replay = client.post('/telegram/webhook', json=update, headers=headers)
+    assert replay.status_code == 200 and replay.json()['replayed'] is True
+    with SessionLocal() as db:
+        msgs = db.scalars(select(TelegramOutbox)).all()
+        assert len(msgs) == 1 and msgs[0].status == 'sent'
+    assert len(calls) == 1
+
+
+def test_outbox_keeps_message_until_retry_succeeds(monkeypatch):
+    import asyncio
+    from app import telegram
+    from app.models import TelegramOutbox, utcnow
+    async def fail(_): return False
+    monkeypatch.setattr(telegram, 'send_message', fail)
+    update = {'update_id': 990012, 'message': {'text': '/start',
+              'from': {'id': 99002, 'first_name': 'tester'},
+              'chat': {'id': 99002, 'type': 'private'}}}
+    headers = {'X-Telegram-Bot-Api-Secret-Token': os.environ['TELEGRAM_WEBHOOK_SECRET']}
+    assert client.post('/telegram/webhook', json=update, headers=headers).status_code == 200
+    with SessionLocal() as db:
+        msg = db.scalar(select(TelegramOutbox))
+        assert msg.status == 'pending' and msg.attempts == 1
+        msg.available_at = utcnow()
+        db.commit()
+    async def success(_): return True
+    monkeypatch.setattr(telegram, 'send_message', success)
+    assert asyncio.run(telegram.deliver_outbox())['sent'] == 1
+    with SessionLocal() as db:
+        msg = db.scalar(select(TelegramOutbox))
+        assert msg.status == 'sent' and msg.attempts == 2

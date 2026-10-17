@@ -3,13 +3,14 @@ from __future__ import annotations
 import hmac
 import html
 import logging
-from sqlalchemy import select, func
+from datetime import timedelta
+from sqlalchemy import select, func, or_
 from fastapi import HTTPException, Request
 import httpx
 from app.config import config
 from app.db import SessionLocal
 from app.models import (User, Plan, Host, Slot, Subscription, Operation, OperationVote,
-                        BotState, ProcessedUpdate, WalletEntry, Ticket, Order)
+                        BotState, ProcessedUpdate, TelegramOutbox, WalletEntry, Ticket, TicketMessage, Order)
 from app.services import (user_get_or_create, available_slots, get_balance,
                          request_operation, vote, owner_ids, purchase)
 
@@ -130,10 +131,35 @@ def process_update(db, update: dict):
         tickets = db.scalars(select(Ticket).where(Ticket.user_id == user_id,
                        Ticket.status != 'draft').order_by(Ticket.created_at.desc()).limit(5)).all()
         preview = '\n'.join(f"• {html.escape(t.subject[:55])} — {html.escape(t.status)}" for t in tickets)
+        rows = [[('تیکت: ' + t.subject[:35], 'tinfo:' + t.id)] for t in tickets]
+        rows += [[('ثبت تیکت جدید', 'newticket', 'primary')], [('بازگشت', 'home')]]
         return [emit(user_id, "<b>◇ مرکز پشتیبانی</b>\n\n" +
                       (preview or "تیکتی ثبت نشده است.") + "\n\n" +
-                      "برای ثبت درخواست جدید موضوع و توضیحات را در یک پیام ارسال کنید.",
-                      kb([[('ثبت تیکت جدید', 'newticket', 'primary')], [('بازگشت', 'home')]]))]
+                      "برای دیدن گفت‌وگو، تیکت را انتخاب کنید.", kb(rows))]
+    if data.startswith("tinfo:"):
+        ticket = db.get(Ticket, data[6:])
+        if not ticket or ticket.user_id != user_id:
+            return [emit(user_id, "تیکت پیدا نشد.", home_keyboard(user_id))]
+        messages = db.scalars(select(TicketMessage).where(TicketMessage.ticket_id == ticket.id)
+                      .order_by(TicketMessage.created_at.desc()).limit(5)).all()
+        preview = "\n\n".join(
+            ("<b>پشتیبانی</b>" if m.is_staff else "<b>شما</b>") + ": " + html.escape(m.body[:400])
+            for m in reversed(messages))
+        intro = ("<b>◇ " + html.escape(ticket.subject[:120]) + "</b>\n" +
+                 "وضعیت: " + html.escape(ticket.status) + "\n\n" +
+                 "<b>درخواست اولیه:</b>\n" + html.escape(ticket.message[:700]))
+        rows = []
+        if ticket.status != "closed":
+            rows.append([('پاسخ به تیکت', 'treply:' + ticket.id, 'primary')])
+        rows.append([('بازگشت', 'support')])
+        return [emit(user_id, intro + ("\n\n<b>پاسخ‌ها:</b>\n" + preview if preview else ""), kb(rows))]
+    if data.startswith("treply:"):
+        ticket = db.get(Ticket, data[7:])
+        if not ticket or ticket.user_id != user_id or ticket.status == "closed":
+            return [emit(user_id, "این تیکت برای پاسخ‌دادن در دسترس نیست.", home_keyboard(user_id))]
+        set_state(db, user_id, "reply_ticket", ticket.id)
+        return [emit(user_id, "پاسخ خود را در یک پیام بنویسید (حداکثر ۴۰۰۰ کاراکتر).",
+                     kb([[('انصراف', 'support')]]))]
     if data == "newticket":
         set_state(db, user_id, 'new_ticket', 'new')
         return [emit(user_id, "<b>ثبت تیکت جدید</b>\n\nدر یک پیام، موضوع را در خط اول و توضیحات را در خطوط بعد بنویسید.\nمثال:\n<code>اختلال در نود آلمان\nاز ساعت ۱۰ اتصال برقرار نمی‌شود...</code>",
@@ -260,6 +286,19 @@ def process_update(db, update: dict):
         return [emit(user_id, "دلیل رد را بنویسید تا برای درخواست‌کننده ارسال شود.")]
     if content and not content.startswith("/"):
         state = find_state(db, user_id)
+        if state and state.action == 'reply_ticket':
+            ticket = db.get(Ticket, state.resource_id)
+            if not ticket or ticket.user_id != user_id or ticket.status == "closed":
+                clear_state(db, user_id)
+                return [emit(user_id, "این تیکت برای پاسخ‌دادن در دسترس نیست.", home_keyboard(user_id))]
+            if not 2 <= len(content.strip()) <= 4000:
+                return [emit(user_id, "پاسخ باید بین ۲ تا ۴۰۰۰ کاراکتر باشد.")]
+            db.add(TicketMessage(ticket_id=ticket.id, author_id=user_id,
+                                 body=content.strip(), is_staff=False))
+            ticket.status = "waiting_support"
+            clear_state(db, user_id)
+            return [emit(user_id, "پاسخ شما در تیکت ثبت شد.", home_keyboard(user_id)),
+                    emit(config.owner_id, "مشتری به تیکت گنج VPS پاسخ داد: " + ticket.id[:12])]
         if state and state.action == 'new_ticket':
             lines = content.strip().splitlines()
             subject = (lines[0] if lines else '').strip()
@@ -305,16 +344,77 @@ async def telegram_request(method: str, payload: dict) -> bool:
         return False
 
 
-async def send_message(message: dict):
-    """Edit navigational callbacks in place; never edit messages sent to another user."""
+async def send_message(message: dict) -> bool:
+    """Try editMessageText first, then fall back to sendMessage on failure.
+
+    Returning True is essential for safely acknowledging the durable outbox.
+    """
     payload = dict(message)
     target_message = payload.pop("_edit_message_id", None)
     if target_message:
         payload["message_id"] = target_message
         if await telegram_request("editMessageText", payload):
-            return
+            return True
         payload.pop("message_id", None)
-    await telegram_request("sendMessage", payload)
+    return await telegram_request("sendMessage", payload)
+
+
+async def deliver_outbox(max_messages: int = 8) -> dict:
+    """Claim rows with a time-bounded lease and retry failures.
+
+    The send-and-ack boundary can permit duplicate Telegram messages if the
+    process exits just after delivery. The database never silently forgets
+    undelivered messages, and webhook update IDs remain deduplicated.
+    """
+    from app.models import utcnow
+    if not config.telegram_bot_token:
+        return {"sent": 0, "pending_token": True}
+    done = 0
+    limit = max(0, min(max_messages, 50))
+    for _ in range(limit):
+        with SessionLocal() as db:
+            now = utcnow()
+            query = select(TelegramOutbox).where(
+                TelegramOutbox.status.in_(["pending", "sending"]),
+                TelegramOutbox.available_at <= now,
+            ).order_by(TelegramOutbox.available_at, TelegramOutbox.created_at)
+            if db.bind.dialect.name == "postgresql":
+                query = query.with_for_update(skip_locked=True)
+            else:
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            item = db.scalar(query.limit(1))
+            if not item:
+                return {"sent": done, "pending_token": False}
+            item.attempts += 1
+            item.status = "sending"
+            item.available_at = now + timedelta(minutes=2)
+            payload = dict(item.payload)
+            row_id = item.id
+            db.commit()
+        try:
+            delivered = bool(await send_message(payload))
+        except Exception:
+            # Do not expose chat IDs, message text, or bot credentials in logs.
+            log.warning("Telegram outbound delivery raised an exception")
+            delivered = False
+        with SessionLocal() as db:
+            row = db.get(TelegramOutbox, row_id)
+            if not row or row.status != "sending":
+                continue
+            if delivered:
+                row.status = "sent"
+                row.delivered_at = utcnow()
+                row.last_error_code = None
+                done += 1
+            elif row.attempts >= 8:
+                row.status = "failed"
+                row.last_error_code = "delivery_failed_max_attempts"
+            else:
+                row.status = "pending"
+                row.last_error_code = "delivery_failed"
+                row.available_at = utcnow() + timedelta(seconds=min(3600, 10 * (2 ** row.attempts)))
+            db.commit()
+    return {"sent": done, "pending_token": False}
 
 
 async def process_webhook(request: Request):
@@ -333,12 +433,7 @@ async def process_webhook(request: Request):
             if db.get(ProcessedUpdate, data["update_id"]):
                 return {"ok": True, "replayed": True}
             outgoing = process_update(db, data)
-            db.add(ProcessedUpdate(update_id=data["update_id"]))
-            db.commit()
         except HTTPException as exc:
-            # A business-rule error should be communicated to the user rather
-            # than causing Telegram to retry forever. Webhook auth is checked
-            # outside this transaction and is never swallowed.
             db.rollback()
             user = ((data.get("callback_query") or {}).get("from") or
                     (data.get("message") or {}).get("from") or {})
@@ -349,23 +444,23 @@ async def process_webhook(request: Request):
                 outgoing = [emit(user["id"], "درخواست انجام نشد: " + html.escape(str(exc.detail)), HOME)]
             if db.bind.dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
-            db.add(ProcessedUpdate(update_id=data["update_id"]))
-            db.commit()
         except Exception:
             db.rollback()
             log.exception("Telegram update handler failed (secrets redacted)")
             raise HTTPException(500, "پردازش پیام با خطا روبه‌رو شد")
-    callback = data.get("callback_query") or {}
-    source = callback.get("message") or {}
-    origin_chat = source.get("chat") or {}
-    user = callback.get("from") or {}
-    # For normal navigation, edit the previously shown bot message instead of
-    # producing an endless stack. Other-user notifications remain new messages.
-    if outgoing and callback and origin_chat.get("id") == user.get("id"):
-        if outgoing[0].get("chat_id") == user.get("id") and source.get("message_id"):
-            outgoing[0]["_edit_message_id"] = source["message_id"]
+        callback = data.get("callback_query") or {}
+        source = callback.get("message") or {}
+        origin_chat = source.get("chat") or {}
+        user = callback.get("from") or {}
+        if outgoing and callback and origin_chat.get("id") == user.get("id"):
+            if outgoing[0].get("chat_id") == user.get("id") and source.get("message_id"):
+                outgoing[0]["_edit_message_id"] = source["message_id"]
+        # Save responses and deduplication in the SAME transaction.
+        for message in outgoing:
+            db.add(TelegramOutbox(payload=message))
+        db.add(ProcessedUpdate(update_id=data["update_id"]))
+        db.commit()
     if callback.get("id"):
         await telegram_request("answerCallbackQuery", {"callback_query_id": callback["id"]})
-    for item in outgoing:
-        await send_message(item)
+    await deliver_outbox(max_messages=min(len(outgoing), 8))
     return {"ok": True}

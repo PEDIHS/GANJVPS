@@ -13,7 +13,7 @@ from app.db import init_db, get_db, SessionLocal
 from app.auth import validate_webapp_init_data, make_session, get_actor, csrf_guard, csrf_token, permission_for
 from app.services import (create_host, create_plan, purchase, get_balance, adjust_wallet,
                          available_slots, owner_ids, request_operation, vote, audit, user_get_or_create)
-from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, TicketMessage, utcnow
+from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, TicketMessage, TelegramOutbox, utcnow
 
 @asynccontextmanager
 async def lifespan(app):
@@ -266,6 +266,9 @@ class TicketCreate(BaseModel):
 def create_ticket(body: TicketCreate, actor: int = Depends(csrf_guard), db: Session = Depends(get_db)):
     ticket = Ticket(user_id=actor, subject=body.subject, message=body.message)
     db.add(ticket)
+    db.flush()
+    db.add(TelegramOutbox(payload={"chat_id": config.owner_id,
+        "text": "تیکت جدید در گنج VPS ثبت شد. شناسه: " + ticket.id[:12], "parse_mode": "HTML"}))
     db.commit()
     return {"id": ticket.id, "status": ticket.status}
 
@@ -371,6 +374,8 @@ def ticket_customer_reply(ticket_id: str, body: TicketReply,
         ticket.status = "waiting_support"
         db.flush()
         audit(db, actor, "ticket.customer_replied", ticket.id)
+        db.add(TelegramOutbox(payload={"chat_id": config.owner_id,
+             "text": "مشتری به تیکت گنج VPS پاسخ داد. شناسه: " + ticket.id[:12], "parse_mode": "HTML"}))
         db.commit()
         return ticket_message_view(item)
 
@@ -393,6 +398,9 @@ def admin_ticket_reply(ticket_id: str, body: TicketReply,
         ticket.status = "answered"
         db.flush()
         audit(db, actor, "ticket.staff_replied", ticket.id, customer_id=ticket.user_id)
+        db.add(TelegramOutbox(payload={"chat_id": ticket.user_id,
+             "text": "پشتیبانی گنج VPS به تیکت شما پاسخ داد. شناسه: " + ticket.id[:12] +
+                     "\nبرای مشاهده پاسخ وارد بخش پشتیبانی شوید.", "parse_mode": "HTML"}))
         db.commit()
         return ticket_message_view(item)
 

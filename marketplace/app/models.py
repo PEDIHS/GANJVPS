@@ -200,6 +200,19 @@ class BotState(Base):
     resource_id: Mapped[str] = mapped_column(String(32))
 
 
+class TelegramOutbox(Base):
+    __tablename__ = "telegram_outbox"
+    __table_args__ = (Index("idx_telegram_outbox_due", "status", "available_at"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class ProcessedUpdate(Base):
     __tablename__ = "processed_bot_updates"
     update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
