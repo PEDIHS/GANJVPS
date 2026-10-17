@@ -210,45 +210,80 @@ def test_webhook_secret_and_update_deduplication(monkeypatch):
     assert 'گنج VPS' in deliveries[0]['text']
 
 
+def test_customer_wallet_ledger_and_admin_reporting():
+    host, plan = setup_host(capacity=2)
+    credit(18001, value=600000)
+    customer, order = buy(18001, plan)
+    ledger = customer.get('/api/v1/wallet/transactions')
+    assert ledger.status_code == 200
+    assert [x['delta_toman'] for x in ledger.json()] == [-300000, 600000]
+    assert customer.get('/api/v1/admin/users').status_code == 403
+    for route in ('users', 'orders', 'tickets', 'audit', 'finance'):
+        assert customer.get('/api/v1/admin/' + route).status_code == 403
+    users = client.get('/api/v1/admin/users', headers=admin)
+    assert users.status_code == 200
+    assert any(u['id'] == 18001 and u['balance_toman'] == 300000 for u in users.json())
+    orders = client.get('/api/v1/admin/orders', headers=admin)
+    assert orders.status_code == 200
+    assert orders.json()[0]['id'] == order['id']
+    finance = client.get('/api/v1/admin/finance', headers=admin)
+    assert finance.status_code == 200
+    assert finance.json()['paid_order_total_toman'] == 300000
+    assert finance.json()['monthly_host_cost_toman'] == 450000
+    assert finance.json()['total_wallet_liability_toman'] == 300000
+    assert finance.json()['hosts'][0]['occupied'] == 1
+
+
+def test_telegram_bot_account_wallet_support_and_colored_buttons():
+    from app.telegram import process_update
+    with SessionLocal() as db:
+        uid = 18101
+        message = lambda text: {'message': {'text': text, 'from': {'id': uid,
+                 'first_name': 'Tester'}, 'chat': {'id': uid, 'type': 'private'}}}
+        callback = lambda data: {'callback_query': {'data': data, 'from': {'id': uid},
+                 'message': {'message_id': 101, 'chat': {'id': uid, 'type': 'private'}}}}
+        start = process_update(db, message('/start'))
+        assert 'گنج VPS' in start[0]['text']
+        buttons = [b for row in start[0]['reply_markup']['inline_keyboard'] for b in row]
+        assert any(x.get('style') == 'primary' for x in buttons)
+        assert all(x.get('style') in (None, 'primary', 'success', 'danger') for x in buttons)
+        assert 'موجودی' in process_update(db, callback('wallet'))[0]['text']
+        assert 'شناسه تلگرام' in process_update(db, callback('account'))[0]['text']
+        support = process_update(db, callback('newticket'))
+        assert 'توضیحات' in support[0]['text']
+        db.commit()  # Telegram webhook commits each processed update.
+        ticket = process_update(db, message('اختلال در نود آلمان\nنود من مدتی است به پنل وصل نمی‌شود'))
+        assert 'درخواست پشتیبانی ثبت شد' in ticket[0]['text']
+        db.commit()
+        assert db.scalar(select(func.count()).select_from(__import__('app.models',fromlist=['Ticket']).Ticket)) == 1
+
+
 def test_concurrent_purchases_cannot_spend_single_wallet_balance_twice():
     from concurrent.futures import ThreadPoolExecutor
-
     _host, plan = setup_host(capacity=2)
     credit(17001, value=300000)
-
     def attempt(i):
         customer = login(17001)
-        return customer.post('/api/v1/orders', json={
-            'plan_id': plan,
-            'runtime': 'pasarguard',
-            'idempotency_key': f'parallel-purchase-{i}-unique'
-        }).status_code
-
+        return customer.post('/api/v1/orders', json={'plan_id': plan,
+            'runtime': 'pasarguard', 'idempotency_key': f'parallel-purchase-{i}-unique'}).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         statuses = sorted(pool.map(attempt, [1, 2]))
     assert statuses == [200, 409]
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(Subscription)) == 1
-        assert sum(x.delta_toman for x in db.scalars(
-            select(WalletEntry).where(WalletEntry.user_id == 17001))) == 0
+        assert sum(x.delta_toman for x in db.scalars(select(WalletEntry).where(WalletEntry.user_id == 17001))) == 0
 
 
 def test_concurrent_host_requests_allow_only_one_pending_operation():
     from concurrent.futures import ThreadPoolExecutor
-
     host, plan = setup_host()
     for uid in (17101, 17102):
         credit(uid)
         buy(uid, plan)
-
     def attempt(i):
         customer = login(17101)
-        return customer.post('/api/v1/operations', json={
-            'host_id': host,
-            'action': 'restart_host',
-            'reason': f'planned maintenance request number {i}'
-        }).status_code
-
+        return customer.post('/api/v1/operations', json={'host_id': host,
+            'action': 'restart_host', 'reason': f'planned maintenance request number {i}'}).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         statuses = sorted(pool.map(attempt, [1, 2]))
     assert statuses == [200, 409]

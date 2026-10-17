@@ -13,7 +13,7 @@ from app.db import init_db, get_db, SessionLocal
 from app.auth import validate_webapp_init_data, make_session, get_actor, csrf_guard, csrf_token, permission_for
 from app.services import (create_host, create_plan, purchase, get_balance, adjust_wallet,
                          available_slots, owner_ids, request_operation, vote, audit, user_get_or_create)
-from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, utcnow
+from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, utcnow
 
 @asynccontextmanager
 async def lifespan(app):
@@ -241,6 +241,57 @@ def create_ticket(body: TicketCreate, actor: int = Depends(csrf_guard), db: Sess
 def get_tickets(actor: int = Depends(get_actor), db: Session = Depends(get_db)):
     rows = db.scalars(select(Ticket).where(Ticket.user_id == actor).order_by(Ticket.created_at.desc())).all()
     return [{"id": t.id, "subject": t.subject, "status": t.status} for t in rows]
+
+
+@app.get("/api/v1/wallet/transactions")
+def wallet_transactions(actor: int = Depends(get_actor), db: Session = Depends(get_db)):
+    rows = db.scalars(select(WalletEntry).where(WalletEntry.user_id == actor)
+                      .order_by(WalletEntry.created_at.desc()).limit(100)).all()
+    return [{"id": w.id, "delta_toman": w.delta_toman, "reason": w.reason,
+             "created_at": w.created_at.isoformat()} for w in rows]
+
+@app.get("/api/v1/admin/orders")
+def admin_orders(actor: int = Depends(permission_for("orders.read")), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Order).order_by(Order.created_at.desc()).limit(100)).all()
+    return [{"id": o.id, "user_id": o.user_id, "amount_toman": o.amount_toman,
+             "status": o.status, "created_at": o.created_at.isoformat(),
+             "plan_id": o.plan_id, "slot_id": o.slot_id} for o in rows]
+
+@app.get("/api/v1/admin/users")
+def admin_users(actor: int = Depends(permission_for("users.read")), db: Session = Depends(get_db)):
+    rows = db.scalars(select(User).order_by(User.created_at.desc()).limit(100)).all()
+    return [{"id": u.id, "display_name": u.display_name, "username": u.username,
+             "active": u.active, "created_at": u.created_at.isoformat(),
+             "balance_toman": get_balance(db, u.id)} for u in rows]
+
+@app.get("/api/v1/admin/tickets")
+def admin_tickets(actor: int = Depends(permission_for("tickets.read")), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Ticket).order_by(Ticket.created_at.desc()).limit(100)).all()
+    return [{"id": t.id, "user_id": t.user_id, "subject": t.subject,
+             "message": t.message, "status": t.status, "department": t.department,
+             "created_at": t.created_at.isoformat()} for t in rows]
+
+@app.get("/api/v1/admin/finance")
+def admin_finance(actor: int = Depends(permission_for("reports.read")), db: Session = Depends(get_db)):
+    costs = int(db.scalar(select(func.coalesce(func.sum(Host.monthly_cost), 0))) or 0)
+    receipts = int(db.scalar(select(func.coalesce(func.sum(Order.amount_toman), 0))
+                             .where(Order.status == "paid")) or 0)
+    balance = int(db.scalar(select(func.coalesce(func.sum(WalletEntry.delta_toman), 0))) or 0)
+    by_host = []
+    for host in db.scalars(select(Host).order_by(Host.created_at.desc()).limit(100)).all():
+        occupied = int(db.scalar(select(func.count()).select_from(Slot).where(
+            Slot.host_id == host.id, Slot.status != "available")) or 0)
+        by_host.append({"id": host.id, "name": host.name, "monthly_cost": host.monthly_cost,
+                        "capacity": host.capacity, "occupied": occupied})
+    return {"paid_order_total_toman": receipts, "monthly_host_cost_toman": costs,
+            "total_wallet_liability_toman": balance, "hosts": by_host,
+            "note": "دریافتی سفارش‌ها، هزینه ماهانه میزبان و مانده کیف‌پول شاخص‌های جداگانه هستند؛ سود خالص حسابداری محسوب نمی‌شوند."}
+
+@app.get("/api/v1/admin/audit")
+def admin_audit(actor: int = Depends(permission_for("reports.read")), db: Session = Depends(get_db)):
+    rows = db.scalars(select(Audit).order_by(Audit.created_at.desc()).limit(80)).all()
+    return [{"event": a.event, "actor_id": a.actor_id, "entity_id": a.entity_id,
+             "created_at": a.created_at.isoformat()} for a in rows]
 
 @app.get("/api/v1/admin/summary")
 def dashboard(actor: int = Depends(permission_for("reports.read")), db: Session = Depends(get_db)):
