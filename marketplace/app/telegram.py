@@ -17,33 +17,37 @@ from app.services import (user_get_or_create, available_slots, get_balance,
 log = logging.getLogger("ganj.telegram")
 
 
-def kb(rows):
-    """Color is used only for one primary/positive/destructive action per screen.
 
-    Telegram style buttons are theme-dependent, so neutral navigation stays unstyled.
-    """
+def kb(rows):
+    # Telegram-supported button styles: success=green, primary=blue,
+    # danger=red. Never rely on custom CSS in native Telegram messages.
     result = []
     for row in rows:
         buttons = []
         for item in row:
-            title, action, *style = item
-            button = {"text": title, "callback_data": action}
-            if style and style[0] in {"primary", "success", "danger"}:
-                button["style"] = style[0]
+            title, action, *requested_style = item
+            button = {'text': title, 'callback_data': action}
+            style = requested_style[0] if requested_style else None
+            if ('بازگشت' in title or 'انصراف' in title or
+                    title.strip() == 'لغو'):
+                style = 'danger'
+            elif action == 'shop' or title.startswith(('🛍 خرید', '🛍 مشاهده فروشگاه')):
+                style = 'success'
+            elif action in {'wallet', 'mine'}:
+                style = 'primary'
+            if style in {'primary', 'success', 'danger'}:
+                button['style'] = style
             buttons.append(button)
         result.append(buttons)
-    return {"inline_keyboard": result}
-
-
+    return {'inline_keyboard': result}
 
 def home_keyboard(uid: int):
-    # Telegram inline keyboards support branding through concise labels and
-    # layout; custom CSS, fonts, rounded cards and arbitrary colors do not.
     rows = [
-        [('🛍 خرید نود خارج', 'shop', 'primary')],
-        [('📦 سرویس‌های من', 'mine'), ('💳 کیف پول', 'wallet')],
+        [('🛍 خرید نود خارج', 'shop', 'success')],
+        [('📦 سرویس‌های من', 'mine', 'primary'),
+         ('💳 کیف پول', 'wallet', 'primary')],
         [('🎧 پشتیبانی', 'support'), ('👤 حساب من', 'account')],
-        [('🗳 درخواست‌های مشترک', 'votebox'), ('📖 راهنما', 'guide')],
+        [('📖 راهنما', 'guide')],
     ]
     if uid == config.owner_id:
         rows.append([('⚙️ مدیریت گنج VPS', 'admin')])
@@ -54,7 +58,6 @@ def home_keyboard(uid: int):
              'web_app': {'url': config.public_base_url}}
         ])
     return board
-
 HOME = home_keyboard(0)  # safe fallback for legacy tests and errors
 
 ACTIONS_FA = {'restart_host': 'ریستارت سرور', 'power_on': 'روشن‌کردن سرور',
@@ -86,64 +89,90 @@ def status_fa(status: str) -> str:
 
 
 def navigation(back: str = 'home', *, home: bool = True):
-    rows = [[('↩️ بازگشت', back)]]
+    rows = [[('↩️ بازگشت', back, 'danger')]]
     if home and back != 'home':
         rows[0].append(('🏠 خانه', 'home'))
     return rows
 
 
-def catalog_view(db, capacity: str = 'all', page: int = 0):
-    # Never invent offers or inventory. Reuse the existing allocation source.
+
+def catalog_view(db, capacity: str = 'all', page: int = 0,
+                 *, show_plans: bool = False):
+    # Counts represent genuinely unallocated slots, not fabricated stock.
     if capacity not in {'all', '2', '3'}:
         capacity = 'all'
     plans = db.scalars(select(Plan).where(Plan.enabled == True)
                        .order_by(Plan.price_toman, Plan.name)).all()
-    in_stock = []
+    inventory = {'2': [], '3': []}
+    # Multiple plans may share the same pool of physical slots. Count each
+    # unallocated slot only once in the category total.
+    unique_slots = {'2': set(), '3': set()}
     for plan in plans:
-        if capacity != 'all' and plan.capacity != int(capacity):
+        if plan.capacity not in {2, 3}:
             continue
-        available = len(available_slots(db, plan))
-        if available:
-            in_stock.append((plan, available))
+        slots = available_slots(db, plan)
+        if slots:
+            category = str(plan.capacity)
+            inventory[category].append((plan, len(slots)))
+            unique_slots[category].update(slot.id for slot in slots)
+    totals = {key: len(slot_ids) for key, slot_ids in unique_slots.items()}
+    totals['all'] = totals['2'] + totals['3']
+    selected = (inventory['2'] + inventory['3'] if capacity == 'all'
+                else inventory[capacity])
+    selected = sorted(selected, key=lambda row: (row[0].price_toman, row[0].name))
     page_size = 5
-    pages = max(1, (len(in_stock) + page_size - 1) // page_size)
+    pages = max(1, (len(selected) + page_size - 1) // page_size)
     page = min(max(page, 0), pages - 1)
-    filtered = in_stock[page * page_size:(page + 1) * page_size]
-    rows = [
-        [('✨ همه نودها', 'shopcat:all:0'),
-         ('👥 دو نفره', 'shopcat:2:0'),
-         ('👥 سه نفره', 'shopcat:3:0')],
-    ]
-    for plan, available in filtered:
-        text = (f'{region_badge(plan.region)} {plan.name[:24]}'
-                f' · {plan.price_toman:,} ت')
-        rows.append([(text, 'plan:' + plan.id)])
-    if pages > 1:
-        arrows = []
-        if page > 0:
-            arrows.append(('◀️ قبلی', f'shopcat:{capacity}:{page-1}'))
-        if page + 1 < pages:
-            arrows.append(('بعدی ▶️', f'shopcat:{capacity}:{page+1}'))
-        rows.append(arrows)
-    rows.extend(navigation('home', home=False))
+    rows = []
+    # Two Telegram buttons in every row are both clickable. RTL clients
+    # render the category on the right and its stock count alongside.
+    for label, category in (('👥 اشتراکی دو نفره', '2'),
+                            ('👥 اشتراکی سه نفره', '3'),
+                            ('📦 همه نودها', 'all')):
+        action = f'shopcat:{category}:0'
+        count_label = f'{totals[category]} عدد'
+        if show_plans and category == capacity:
+            label = '✓ ' + label
+        rows.append([(label, action), (count_label, action)])
     heading = titlebar('فروشگاه نودهای خارج', 'GANJ / NODE MARKET')
-    label = {'all': 'تمام ظرفیت‌ها', '2': 'دو نفره', '3': 'سه نفره'}[capacity]
-    text = (heading +
-            'نود مناسب کسب‌وکارت را انتخاب کن.\n'
-            'قیمت نهایی و نوع پنل قبل از پرداخت نمایش داده می‌شود.\n\n'
-            f'📍 دسته‌بندی: <b>{label}</b>\n'
-            f'📦 پلن‌های موجود: <b>{len(in_stock)}</b>\n')
-    if in_stock:
-        text += f'📄 صفحه <b>{page + 1}</b> از <b>{pages}</b>\n\n'
-        text += '<i>برای مشاهده مشخصات کامل، روی پلن بزن.</i>'
+    label = {'all': 'همه نودها', '2': 'اشتراکی دو نفره',
+             '3': 'اشتراکی سه نفره'}[capacity]
+    text = (heading + '\n'
+            'پلن موردنظرت را از فهرست زیر انتخاب کن.\n'
+            'تعدادها نشان‌دهنده <b>ظرفیت واقعی قابل سفارش</b> هستند.\n\n'
+            '<b>📦 پلن‌های اشتراکی                          تعداد</b>\n'
+            f'جمع موجودی قابل سفارش: <b>{totals["all"]} نود</b>\n')
+    if show_plans:
+        rows_for_page = selected[page * page_size:(page+1) * page_size]
+        for plan, available in rows_for_page:
+            action = 'plan:' + plan.id
+            rows.append([
+                (f'{region_badge(plan.region)} {plan.name[:23]}'
+                 f' · {plan.price_toman:,} ت', action),
+                (f'{available} عدد', action)
+            ])
+        if pages > 1:
+            pagination = []
+            if page > 0:
+                pagination.append(('◀ قبلی', f'shopcat:{capacity}:{page-1}'))
+            if page+1 < pages:
+                pagination.append(('بعدی ▶', f'shopcat:{capacity}:{page+1}'))
+            rows.append(pagination)
+        text += (f'\n{SEPARATOR}\n'
+                 f'🛍 <b>{label}</b>\n'
+                 f'پلن‌های موجود: <b>{len(selected)}</b> | '
+                 f'تعداد نودهای قابل سفارش: <b>{totals[capacity]}</b>\n')
+        if selected:
+            text += f'صفحه {page+1} از {pages}\n<i>روی نام پلن یا تعداد کنار آن بزن.</i>'
+        else:
+            text += ('<i>فعلاً در این دسته موجودی نداریم. '
+                     'دسته‌های دیگر را بررسی کن.</i>')
     else:
-        text += ('\nفعلاً پلنی با این ظرفیت موجود نیست. '
-                 'با تغییر دسته‌بندی، سایر نودها را ببین.\n'
-                 'موجودی فقط از سرورهای ثبت‌شده نمایش داده می‌شود.')
+        text += ('\n<i>روی عنوان هر دسته یا تعداد کنارش بزن '
+                 'تا لیست همان نودها باز شود.</i>')
+    rows.extend(navigation('shop' if show_plans else 'home',
+                           home=show_plans))
     return text, kb(rows)
-
-
-
 def menu_message(uid: int, db):
     active = db.scalar(select(func.count()).select_from(Subscription).where(
         Subscription.user_id == uid, Subscription.status.in_(["active", "provisioning"]))) or 0
@@ -368,7 +397,7 @@ def process_update(db, update: dict):
                     page = int(parts[2])
                 except ValueError:
                     page = 0
-        text, keyboard = catalog_view(db, capacity, page)
+        text, keyboard = catalog_view(db, capacity, page, show_plans=data.startswith('shopcat:'))
         return [emit(user_id, text, keyboard)]
 
     if data.startswith('plan:'):
@@ -462,6 +491,34 @@ def process_update(db, update: dict):
                 '\n\n<i>جزئیات هر سرویس را با دکمه مربوط به آن ببین.</i>')
         return [emit(user_id, body, kb(buttons))]
 
+    if data.startswith('shared:'):
+        sub = db.get(Subscription, data[7:])
+        if not sub or sub.user_id != user_id:
+            return [emit(user_id, 'این سرویس برای حساب شما در دسترس نیست.',
+                         kb(navigation('mine')))]
+        slot = db.get(Slot, sub.slot_id)
+        host = db.get(Host, slot.host_id) if slot else None
+        if not host:
+            return [emit(user_id, 'میزبان سرویس پیدا نشد.',
+                         kb(navigation('mine')))]
+        pending = db.scalars(select(Operation).where(
+            Operation.host_id == host.id, Operation.status == 'pending_approval')
+            .order_by(Operation.created_at.desc()).limit(30)).all()
+        visible = [op for op in pending if user_id in op.owners_snapshot
+                   and op.requester_id != user_id]
+        body = (titlebar('درخواست‌های مشترک این سرویس', 'SHARED NODE CONTROL') +
+                '\n🖥 نود: <b>' + html.escape(host.name) + '</b>\n'
+                f'🗳 درخواست‌های نیازمند رأی شما: <b>{len(visible)}</b>\n\n'
+                '<i>فقط درخواست‌های همین میزبان نمایش داده می‌شوند. '
+                'اجرای واقعی عملیات هنوز نیازمند بررسی فنی است.</i>')
+        rows = [[('🗳 ' + ACTIONS_FA.get(op.action, op.action)[:24] +
+                 ' · ' + op.id[:6], 'vinfo:' + op.id)] for op in visible[:8]]
+        rows += [[('🔄 ریستارت میزبان', 'op:restart_host:' + host.id),
+                  ('🌐 تغییر IP', 'op:change_shared_ip:' + host.id)],
+                 [('⏻ خاموش‌کردن', 'op:power_off:' + host.id),
+                  ('⏽ روشن‌کردن', 'op:power_on:' + host.id)]]
+        rows += navigation('sub:' + sub.id)
+        return [emit(user_id, body, kb(rows))]
     if data.startswith('sub:'):
         sub = db.get(Subscription, data[4:])
         if not sub or sub.user_id != user_id:
@@ -484,13 +541,13 @@ def process_update(db, update: dict):
         if sub.public_ip:
             buttons.append([{'text':'📋 کپی آدرس IP',
                               'copy_text':{'text':sub.public_ip}}])
-        actions = kb([[('🔄 درخواست ریستارت', 'op:restart_host:' + host.id),
-                       ('🌐 درخواست تغییر IP', 'op:change_shared_ip:' + host.id)],
-                      [('⏻ خاموش‌کردن', 'op:power_off:' + host.id),
-                       ('⏽ روشن‌کردن', 'op:power_on:' + host.id)]] +
-                      navigation('mine'))
+        actions = kb([[('🗳 درخواست‌های مشترک این سرویس',
+                         'shared:' + sub.id, 'primary')]] +
+                     navigation('mine'))
         actions['inline_keyboard'] = buttons + actions['inline_keyboard']
-        return [emit(user_id, body + '\n\n<i>عملیات مشترک فقط پس از رأی همه مالکان و بررسی فنی قابل اجراست.</i>',
+        return [emit(user_id, body + '\n\n'
+                     '<i>درخواست عملیات و رأی‌گیری فقط از قسمت '
+                     '«درخواست‌های مشترک این سرویس» قابل مشاهده است.</i>',
                      actions)]
     if data.startswith("op:"):
         try:
@@ -507,21 +564,11 @@ def process_update(db, update: dict):
                      kb([[('انصراف','home')]]))]
 
     if data == 'votebox':
-        ops = db.scalars(select(Operation).where(
-            Operation.status == 'pending_approval')
-            .order_by(Operation.created_at.desc()).limit(100)).all()
-        visible = [op for op in ops if user_id in op.owners_snapshot
-                   and op.requester_id != user_id]
-        rows = [[('🗳 ' + ACTIONS_FA.get(op.action, op.action)[:26] +
-                 ' · ' + op.id[:6], 'vinfo:' + op.id)] for op in visible[:8]]
-        rows += navigation('home')
-        body = (titlebar('مدیریت مشترک نودها', 'SHARED OPERATIONS') +
-                '\n<b>درخواست‌های نیازمند رأی شما</b>\n'
-                f'🗳 تعداد درخواست‌ها: <b>{len(visible)}</b>\n\n'
-                + ('برای مشاهده دلیل و ثبت رأی، درخواست را انتخاب کن.'
-                   if visible else 'در حال حاضر درخواست منتظر رأی ندارید.') +
-                '\n\n<i>هیچ عملیات واقعی بدون توافق مالکان و تست اتصال اجرا نمی‌شود.</i>')
-        return [emit(user_id, body, kb(rows))]
+        return [emit(user_id, titlebar('درخواست‌های مشترک', 'PER-SERVICE ACCESS') +
+                     '\nبرای دیدن درخواست‌ها، ابتدا وارد «سرویس‌های من» شو '
+                     'و نود موردنظرت را انتخاب کن.',
+                     kb([[('📦 سرویس‌های من', 'mine', 'primary')]] +
+                        navigation('home')))]
     if data.startswith("vinfo:"):
         op = db.get(Operation, data[6:])
         if not op or user_id not in op.owners_snapshot or user_id == op.requester_id:
