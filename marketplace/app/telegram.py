@@ -35,17 +35,25 @@ def kb(rows):
     return {"inline_keyboard": result}
 
 
+
 def home_keyboard(uid: int):
-    rows = [[('▦ خرید نود', 'shop', 'primary'), ('▤ سرویس‌های من', 'mine')],
-            [('◈ کیف پول', 'wallet'), ('◎ درخواست‌های مشترک', 'votebox')],
-            [('◇ پشتیبانی', 'support'), ('◫ حساب کاربری', 'account')]]
+    # Telegram inline keyboards support branding through concise labels and
+    # layout; custom CSS, fonts, rounded cards and arbitrary colors do not.
+    rows = [
+        [('🛍 خرید نود خارج', 'shop', 'primary')],
+        [('📦 سرویس‌های من', 'mine'), ('💳 کیف پول', 'wallet')],
+        [('🎧 پشتیبانی', 'support'), ('👤 حساب من', 'account')],
+        [('🗳 درخواست‌های مشترک', 'votebox'), ('📖 راهنما', 'guide')],
+    ]
     if uid == config.owner_id:
-        rows.append([('▧ مدیریت', 'admin')])
-    keyboard = kb(rows)
-    if config.public_base_url.startswith("https://"):
-        keyboard["inline_keyboard"].append([
-            {"text": "◆ داشبورد پیشرفته", "web_app": {"url": config.public_base_url}}])
-    return keyboard
+        rows.append([('⚙️ مدیریت گنج VPS', 'admin')])
+    board = kb(rows)
+    if config.public_base_url.startswith('https://'):
+        board['inline_keyboard'].append([
+            {'text': '✨ ورود به داشبورد اختصاصی',
+             'web_app': {'url': config.public_base_url}}
+        ])
+    return board
 
 HOME = home_keyboard(0)  # safe fallback for legacy tests and errors
 
@@ -53,18 +61,103 @@ ACTIONS_FA = {'restart_host': 'ریستارت سرور', 'power_on': 'روشن�
               'power_off': 'خاموش‌کردن سرور', 'change_shared_ip': 'تغییر IP مشترک'}
 
 
+SEPARATOR = "━━━━━━━━━━━━━━━━"
+REGION_FLAGS = {'DE': '🇩🇪', 'FR': '🇫🇷', 'TR': '🇹🇷',
+                'US': '🇺🇸', 'FI': '🇫🇮', 'NL': '🇳🇱',
+                'GB': '🇬🇧', 'UK': '🇬🇧', 'AE': '🇦🇪'}
+
+
+def region_badge(region: str) -> str:
+    code = (region or '').strip().upper()
+    return REGION_FLAGS.get(code, '🌐')
+
+
+def titlebar(label: str, tag: str = 'GANJ VPS') -> str:
+    return f'<b>◆ {html.escape(label)}</b>\n<code>{html.escape(tag)}</code>\n{SEPARATOR}\n'
+
+
+def status_fa(status: str) -> str:
+    return {'active': '🟢 فعال', 'provisioning': '🟡 در حال آماده‌سازی',
+            'pending': '🟡 در انتظار', 'open': '🔵 باز',
+            'waiting_support': '🟡 در انتظار پشتیبانی',
+            'answered': '🟢 پاسخ داده‌شده', 'in_progress': '🔵 در حال بررسی',
+            'closed': '⚪ بسته', 'expired': '⚪ پایان‌یافته',
+            'suspended': '🔴 متوقف'}.get(status, html.escape(status or 'نامشخص'))
+
+
+def navigation(back: str = 'home', *, home: bool = True):
+    rows = [[('↩️ بازگشت', back)]]
+    if home and back != 'home':
+        rows[0].append(('🏠 خانه', 'home'))
+    return rows
+
+
+def catalog_view(db, capacity: str = 'all', page: int = 0):
+    # Never invent offers or inventory. Reuse the existing allocation source.
+    if capacity not in {'all', '2', '3'}:
+        capacity = 'all'
+    plans = db.scalars(select(Plan).where(Plan.enabled == True)
+                       .order_by(Plan.price_toman, Plan.name)).all()
+    in_stock = []
+    for plan in plans:
+        if capacity != 'all' and plan.capacity != int(capacity):
+            continue
+        available = len(available_slots(db, plan))
+        if available:
+            in_stock.append((plan, available))
+    page_size = 5
+    pages = max(1, (len(in_stock) + page_size - 1) // page_size)
+    page = min(max(page, 0), pages - 1)
+    filtered = in_stock[page * page_size:(page + 1) * page_size]
+    rows = [
+        [('✨ همه نودها', 'shopcat:all:0'),
+         ('👥 دو نفره', 'shopcat:2:0'),
+         ('👥 سه نفره', 'shopcat:3:0')],
+    ]
+    for plan, available in filtered:
+        text = (f'{region_badge(plan.region)} {plan.name[:24]}'
+                f' · {plan.price_toman:,} ت')
+        rows.append([(text, 'plan:' + plan.id)])
+    if pages > 1:
+        arrows = []
+        if page > 0:
+            arrows.append(('◀️ قبلی', f'shopcat:{capacity}:{page-1}'))
+        if page + 1 < pages:
+            arrows.append(('بعدی ▶️', f'shopcat:{capacity}:{page+1}'))
+        rows.append(arrows)
+    rows.extend(navigation('home', home=False))
+    heading = titlebar('فروشگاه نودهای خارج', 'GANJ / NODE MARKET')
+    label = {'all': 'تمام ظرفیت‌ها', '2': 'دو نفره', '3': 'سه نفره'}[capacity]
+    text = (heading +
+            'نود مناسب کسب‌وکارت را انتخاب کن.\n'
+            'قیمت نهایی و نوع پنل قبل از پرداخت نمایش داده می‌شود.\n\n'
+            f'📍 دسته‌بندی: <b>{label}</b>\n'
+            f'📦 پلن‌های موجود: <b>{len(in_stock)}</b>\n')
+    if in_stock:
+        text += f'📄 صفحه <b>{page + 1}</b> از <b>{pages}</b>\n\n'
+        text += '<i>برای مشاهده مشخصات کامل، روی پلن بزن.</i>'
+    else:
+        text += ('\nفعلاً پلنی با این ظرفیت موجود نیست. '
+                 'با تغییر دسته‌بندی، سایر نودها را ببین.\n'
+                 'موجودی فقط از سرورهای ثبت‌شده نمایش داده می‌شود.')
+    return text, kb(rows)
+
+
+
 def menu_message(uid: int, db):
     active = db.scalar(select(func.count()).select_from(Subscription).where(
         Subscription.user_id == uid, Subscription.status.in_(["active", "provisioning"]))) or 0
     pending = db.scalar(select(func.count()).select_from(Subscription).where(
-        Subscription.user_id == uid, Subscription.status == "provisioning")) or 0
-    return ("<b>◆ گنج VPS | مدیریت نودهای خارج</b>\n"
-            "<i>زیرساخت حرفه‌ای، مدیریت ساده</i>\n\n"
-            f"▤ سرویس‌های فعال یا درحال آماده‌سازی: <b>{active}</b>\n"
-            f"◈ موجودی کیف پول: <b>{get_balance(db, uid):,} تومان</b>\n"
-            f"◷ سفارش‌های در حال آماده‌سازی: <b>{pending}</b>\n\n"
-            "از منوی زیر بخش موردنظر را انتخاب کنید.")
-
+        Subscription.user_id == uid, Subscription.status == 'provisioning')) or 0
+    balance = get_balance(db, uid)
+    return (titlebar('گنج VPS | فضای ابری اختصاصی', 'GANJ CLOUD • PRIVATE CONSOLE') +
+            '\n<b>به گنج VPS خوش اومدی!</b>\n'
+            'اینجا خرید نود، مدیریت سرویس و پشتیبانی در دسترس توست.\n\n'
+            '📊 <b>خلاصه حساب</b>\n'
+            f'📦 سرویس‌های من: <b>{active}</b>\n'
+            f'💳 موجودی کیف پول: <b>{balance:,} تومان</b>\n'
+            f'⏳ در انتظار آماده‌سازی: <b>{pending}</b>\n\n'
+            '<i>از فروشگاه شروع کن یا سرویس‌های فعلی را مدیریت کن.</i>')
 
 def emit(target, text, keyboard=None):
     return {"chat_id": target, "text": text, "parse_mode": "HTML", "reply_markup": keyboard}
@@ -106,36 +199,120 @@ def process_update(db, update: dict):
     if content.startswith("/start") or data == "home":
         clear_state(db, user_id)
         return [emit(user_id, menu_message(user_id, db), home_keyboard(user_id))]
-    if content == "/admin" or data == "admin":
+
+    if content == '/admin' or data == 'admin':
         if user_id != config.owner_id:
-            return [emit(user_id, "این بخش فقط برای مدیران مجاز فعال است.", home_keyboard(user_id))]
+            return [emit(user_id, 'این بخش تنها برای مدیر مجاز است.',
+                         home_keyboard(user_id))]
         hosts = db.scalar(select(func.count()).select_from(Host)) or 0
         users = db.scalar(select(func.count()).select_from(User)) or 0
         orders = db.scalar(select(func.count()).select_from(Order)) or 0
-        return [emit(user_id, "<b>▧ مدیریت گنج VPS</b>\n\n" +
-                     f"◉ سرورهای ثبت‌شده: <b>{hosts}</b>\n" +
-                     f"◉ کاربران: <b>{users}</b>\n" +
-                     f"◉ سفارش‌ها: <b>{orders}</b>\n\n" +
-                     "مدیریت مالی، تعریف سرور و پلن در داشبورد امن وب انجام می‌شود.",
-                     kb([[('بازگشت', 'home')]]))]
-    if data == "account":
+        tickets = db.scalar(select(func.count()).select_from(Ticket).where(
+            Ticket.status != 'closed')) or 0
+        body = (titlebar('مرکز مدیریت گنج VPS', 'GANJ / ADMIN CONSOLE') +
+                '\n<b>نمای کلی سیستم</b>\n'
+                f'🖥 سرورهای ثبت‌شده: <b>{hosts}</b>\n'
+                f'👥 کاربران: <b>{users}</b>\n'
+                f'🧾 سفارش‌ها: <b>{orders}</b>\n'
+                f'🎧 تیکت‌های باز: <b>{tickets}</b>\n\n'
+                '<i>گزارش‌های فوری اینجا قابل مشاهده‌اند؛ تغییر محصولات و امور مالی در داشبورد امن وب انجام می‌شود.</i>')
+        board = kb([[('📊 گزارش فروش', 'admin:finance'), ('🧾 سفارش‌ها', 'admin:orders')],
+                    [('🖥 سرورها', 'admin:hosts'), ('👥 کاربران', 'admin:users')],
+                    [('🎧 پشتیبانی', 'admin:tickets')]] + navigation())
+        if config.public_base_url.startswith('https://'):
+            board['inline_keyboard'].insert(0, [{
+                'text':'✨ بازکردن داشبورد مدیریت',
+                'web_app':{'url':config.public_base_url}}])
+        return [emit(user_id, body, board)]
+    if data.startswith('admin:'):
+        if user_id != config.owner_id:
+            return [emit(user_id, 'دسترسی مجاز نیست.', home_keyboard(user_id))]
+        key = data.split(':', 1)[1]
+        if key == 'finance':
+            paid = db.scalar(select(func.sum(Order.amount_toman)).where(
+                Order.status == 'paid')) or 0
+            count = db.scalar(select(func.count()).select_from(Order).where(
+                Order.status == 'paid')) or 0
+            body = (titlebar('خلاصه فروش', 'FINANCIAL SNAPSHOT') +
+                    f'🧾 تعداد سفارش‌های پرداخت‌شده: <b>{count}</b>\n'
+                    f'💰 مجموع ثبت‌شده: <b>{paid:,} تومان</b>\n\n'
+                    '<i>این مبلغ فروش ثبت‌شده است، نه سود خالص یا موجودی بانکی.</i>')
+        elif key == 'orders':
+            latest = db.scalars(select(Order).order_by(
+                Order.created_at.desc()).limit(5)).all()
+            body = (titlebar('سفارش‌های اخیر', 'ORDER ACTIVITY') +
+                    ('\n'.join(f'• <code>{o.id[:10]}</code> · {o.amount_toman:,} ت'
+                               f' · {status_fa(o.status)}' for o in latest) or
+                     'سفارشی ثبت نشده است.'))
+        elif key == 'hosts':
+            rows = db.scalars(select(Host).order_by(Host.created_at.desc()).limit(6)).all()
+            body = (titlebar('سرورهای ثبت‌شده', 'INFRASTRUCTURE') +
+                    ('\n'.join('• ' + html.escape(h.name[:45]) +
+                               ' · ' + html.escape(h.region[:12]) for h in rows) or
+                     'سروری ثبت نشده است.'))
+        elif key == 'users':
+            count = db.scalar(select(func.count()).select_from(User)) or 0
+            body = titlebar('مدیریت کاربران', 'CUSTOMERS') + f'👥 کاربران ثبت‌شده: <b>{count}</b>\n\nجزئیات و عملیات مدیریتی در داشبورد امن وب در دسترس است.'
+        elif key == 'tickets':
+            count = db.scalar(select(func.count()).select_from(Ticket).where(
+                Ticket.status != 'closed')) or 0
+            body = titlebar('درخواست‌های پشتیبانی', 'SUPPORT DESK') + f'🎧 تیکت‌های باز: <b>{count}</b>\n\nبرای پاسخ به مشتریان وارد پنل مدیریت وب شو.'
+        else:
+            return [emit(user_id, 'این بخش پیدا نشد.', kb(navigation('admin')))]
+        buttons = kb(navigation('admin'))
+        if config.public_base_url.startswith('https://'):
+            buttons['inline_keyboard'].insert(0, [{'text':'✨ مدیریت در داشبورد',
+                           'web_app':{'url':config.public_base_url}}])
+        return [emit(user_id, body, buttons)]
+    if data == 'guide':
+        text = (titlebar('راهنمای خرید و مدیریت', 'HOW IT WORKS') +
+                '\n<b>۱. انتخاب نود</b>\n'
+                'در فروشگاه، ظرفیت و لوکیشن را بررسی و نوع پنل را انتخاب کن.\n\n'
+                '<b>۲. پرداخت با کیف پول</b>\n'
+                'اگر اعتبار کافی داشته باشی، سفارش از کیف پول ثبت می‌شود. '
+                'درگاه شارژ خودکار هنوز فعال نشده است.\n\n'
+                '<b>۳. پیگیری تحویل</b>\n'
+                'تا زمان آماده‌سازی و تست فنی، سفارش تحویل‌شده محسوب نمی‌شود.\n\n'
+                '<b>۴. پشتیبانی</b>\n'
+                'سؤال یا مشکل را از بخش تیکت‌ها ثبت و پیگیری کن.\n\n'
+                '🔒 <i>در نود اشتراکی، رمز root و SSH ارائه نمی‌شود.</i>')
+        return [emit(user_id, text,
+                     kb([[('🛍 مشاهده فروشگاه', 'shop', 'primary')],
+                         [('🎧 پشتیبانی', 'support')] ] + navigation()))]
+
+    if data == 'account':
         user = db.get(User, user_id)
-        count = db.scalar(select(func.count()).select_from(Subscription).where(Subscription.user_id == user_id)) or 0
-        return [emit(user_id, "<b>◫ حساب کاربری گنج VPS</b>\n\n" +
-                     f"شناسه تلگرام: <code>{user_id}</code>\n" +
-                     f"نام: {html.escape(user.display_name or 'کاربر گنج')}\n" +
-                     f"تعداد سرویس‌ها: <b>{count}</b>\n" +
-                     f"اعتبار کیف پول: <b>{get_balance(db, user_id):,} تومان</b>",
-                     kb([[('پشتیبانی', 'support'), ('کیف پول', 'wallet')], [('بازگشت', 'home')]]))]
-    if data == "support":
-        tickets = db.scalars(select(Ticket).where(Ticket.user_id == user_id,
-                       Ticket.status != 'draft').order_by(Ticket.created_at.desc()).limit(5)).all()
-        preview = '\n'.join(f"• {html.escape(t.subject[:55])} — {html.escape(t.status)}" for t in tickets)
-        rows = [[('تیکت: ' + t.subject[:35], 'tinfo:' + t.id)] for t in tickets]
-        rows += [[('ثبت تیکت جدید', 'newticket', 'primary')], [('بازگشت', 'home')]]
-        return [emit(user_id, "<b>◇ مرکز پشتیبانی</b>\n\n" +
-                      (preview or "تیکتی ثبت نشده است.") + "\n\n" +
-                      "برای دیدن گفت‌وگو، تیکت را انتخاب کنید.", kb(rows))]
+        count = db.scalar(select(func.count()).select_from(Subscription).where(
+            Subscription.user_id == user_id)) or 0
+        active = db.scalar(select(func.count()).select_from(Subscription).where(
+            Subscription.user_id == user_id, Subscription.status == 'active')) or 0
+        body = (titlebar('پروفایل کاربری', 'GANJ / MY ACCOUNT') +
+                '\n👤 <b>' + html.escape((user.display_name or 'کاربر گنج')[:80]) + '</b>\n'
+                f'🆔 شناسه تلگرام: <code>{user_id}</code>\n\n'
+                f'📦 کل سرویس‌ها: <b>{count}</b>\n'
+                f'🟢 سرویس‌های فعال: <b>{active}</b>\n'
+                f'💳 موجودی کیف پول: <b>{get_balance(db, user_id):,} تومان</b>\n\n'
+                '<i>اطلاعات مالی صرفاً از حساب ثبت‌شده شما خوانده می‌شود.</i>')
+        return [emit(user_id, body, kb([[('📦 سرویس‌های من', 'mine'),
+                      ('💳 کیف پول', 'wallet')], [('🎧 پشتیبانی', 'support')]] +
+                      navigation()))]
+
+    if data == 'support':
+        tickets = db.scalars(select(Ticket).where(
+            Ticket.user_id == user_id, Ticket.status != 'draft')
+            .order_by(Ticket.created_at.desc()).limit(5)).all()
+        preview = '\n'.join('• ' + html.escape(t.subject[:49]) +
+                           ' — ' + status_fa(t.status) for t in tickets)
+        buttons = [[('📝 ثبت تیکت جدید', 'newticket', 'primary')]]
+        buttons += [[('🎫 ' + t.subject[:31], 'tinfo:' + t.id)] for t in tickets]
+        buttons += navigation('home')
+        body = (titlebar('مرکز پشتیبانی', 'GANJ / SUPPORT DESK') +
+                '\n<b>همراهت هستیم.</b>\n'
+                'پیگیری درخواست‌ها و گفت‌وگو با پشتیبانی از همین بخش انجام می‌شود.\n\n'
+                '🎟 <b>آخرین تیکت‌ها</b>\n' +
+                (preview or 'هنوز درخواستی ثبت نشده است.') +
+                '\n\n<i>برای مشاهده گفت‌وگو، تیکت را انتخاب کن.</i>')
+        return [emit(user_id, body, kb(buttons))]
     if data.startswith("tinfo:"):
         ticket = db.get(Ticket, data[6:])
         if not ticket or ticket.user_id != user_id:
@@ -164,44 +341,94 @@ def process_update(db, update: dict):
         set_state(db, user_id, 'new_ticket', 'new')
         return [emit(user_id, "<b>ثبت تیکت جدید</b>\n\nدر یک پیام، موضوع را در خط اول و توضیحات را در خطوط بعد بنویسید.\nمثال:\n<code>اختلال در نود آلمان\nاز ساعت ۱۰ اتصال برقرار نمی‌شود...</code>",
                      kb([[('انصراف', 'home')]]))]
-    if data == "wallet":
+
+    if data == 'wallet':
         history = db.scalars(select(WalletEntry).where(WalletEntry.user_id == user_id)
                     .order_by(WalletEntry.created_at.desc()).limit(5)).all()
-        lines = '\n'.join(("＋" if t.delta_toman > 0 else "−") +
-                          f" {abs(t.delta_toman):,} تومان | {html.escape(t.reason[:55])}" for t in history)
-        return [emit(user_id, "<b>◈ کیف پول گنج VPS</b>\n\n" +
-                     f"موجودی: <b>{get_balance(db, user_id):,} تومان</b>\n\n" +
-                     "<b>تراکنش‌های اخیر</b>\n" + (lines or "تراکنشی ثبت نشده است.") +
-                     "\n\nشارژ موجودی پس از اتصال روش پرداخت مجاز فعال خواهد شد.",
-                     kb([[('بازگشت', 'home')]]))]
-    if data == "shop":
-        plans = db.scalars(select(Plan).where(Plan.enabled == True).order_by(Plan.price_toman)).all()
-        rows = [[(f"{p.name} | {p.price_toman:,} تومان", "plan:" + p.id)] for p in plans if available_slots(db, p)]
-        rows.append([("بازگشت", "home")])
-        return [emit(user_id, "<b>▦ فروشگاه نود خارج</b>\n\n" +
-                     ("پلن موجود را انتخاب کنید. قیمت و ظرفیت قبل از خرید نمایش داده می‌شود." if len(rows) > 1 else
-                      "در حال حاضر نودی برای فروش ثبت نشده است. پس از اضافه‌شدن سرور، موجودی اینجا به‌روزرسانی می‌شود."), kb(rows))]
-    if data.startswith("plan:"):
-        p = db.get(Plan, data[5:])
-        if not p or not p.enabled or not available_slots(db, p):
-            return [emit(user_id, "این پلن موجود نیست.", HOME)]
-        rows = [[("پاسارگارد", f"runtime:{p.id}:pasarguard"),
-                 ("ربکا", f"runtime:{p.id}:rebecca")],
-                [("مرزبان", f"runtime:{p.id}:marzban")], [("بازگشت", "shop")]]
-        return [emit(user_id, f"<b>{html.escape(p.name)}</b>\nقیمت: {p.price_toman:,} تومان\nمدت: {p.term_days} روز\nنوع پنل را انتخاب کنید:", kb(rows))]
-    if data.startswith("runtime:"):
+        transactions = '\n'.join(('🟢 +' if t.delta_toman > 0 else '🔴 −') +
+            f' <b>{abs(t.delta_toman):,}</b> ت · {html.escape(t.reason[:48])}'
+            for t in history)
+        text = (titlebar('کیف پول گنج', 'GANJ / YOUR WALLET') +
+                '\n<b>موجودی قابل استفاده</b>\n'
+                f'💳 <b>{get_balance(db, user_id):,} تومان</b>\n\n'
+                f'{SEPARATOR}\n'
+                '🧾 <b>آخرین تراکنش‌ها</b>\n' +
+                (transactions or 'هنوز تراکنشی ثبت نشده است.') +
+                '\n\n<i>شارژ آنلاین کیف پول هنوز فعال نشده است. '
+                'اعتبار فقط پس از تأیید پرداخت مجاز ثبت می‌شود.</i>')
+        return [emit(user_id, text, kb([[('🛍 مشاهده فروشگاه', 'shop'),
+                 ('👤 حساب من', 'account')]] + navigation()))]
+    if data == "shop" or data.startswith('shopcat:'):
+        capacity, page = 'all', 0
+        if data.startswith('shopcat:'):
+            parts = data.split(':')
+            if len(parts) == 3 and parts[1] in {'all', '2', '3'}:
+                capacity = parts[1]
+                try:
+                    page = int(parts[2])
+                except ValueError:
+                    page = 0
+        text, keyboard = catalog_view(db, capacity, page)
+        return [emit(user_id, text, keyboard)]
+
+    if data.startswith('plan:'):
+        plan = db.get(Plan, data[5:])
+        if not plan or not plan.enabled:
+            return [emit(user_id, 'این پلن دیگر فعال نیست.', kb(navigation('shop')))]
+        count = len(available_slots(db, plan))
+        if not count:
+            return [emit(user_id, 'ظرفیت این پلن تمام شده است.', kb(navigation('shop')))]
+        body = (titlebar('مشخصات پلن', 'PLAN DETAILS') +
+                '\n' + region_badge(plan.region) + ' <b>' +
+                html.escape(plan.name) + '</b>\n'
+                f'🌐 موقعیت: <b>{html.escape(plan.region)}</b>\n'
+                f'👥 ظرفیت نود: <b>{plan.capacity} نفره</b>\n'
+                f'📅 مدت اعتبار: <b>{plan.term_days} روز</b>\n'
+                f'📦 ظرفیت قابل سفارش: <b>{count}</b>\n'
+                f'💰 قیمت: <b>{plan.price_toman:,} تومان</b>\n\n'
+                f'{SEPARATOR}\n'
+                'پنل موردنظرت را انتخاب کن:'
+                '\n<i>بعد از انتخاب پنل، فاکتور و مبلغ نهایی نمایش داده می‌شود.</i>')
+        rows = [[('🟢 پاسارگارد', f'runtime:{plan.id}:pasarguard'),
+                 ('🔷 ربکا', f'runtime:{plan.id}:rebecca')],
+                [('🟣 مرزبان', f'runtime:{plan.id}:marzban')]]
+        return [emit(user_id, body, kb(rows + navigation('shop')))]
+
+    if data.startswith('runtime:'):
         try:
-            _, pid, runtime = data.split(":")
+            _, pid, runtime = data.split(':')
         except ValueError:
-            return [emit(user_id, "درخواست نامعتبر", HOME)]
-        p = db.get(Plan, pid)
-        if not p or not p.enabled or runtime not in {"pasarguard", "rebecca", "marzban"}:
-            return [emit(user_id, "پلن یا پنل معتبر نیست", HOME)]
-        set_state(db, user_id, "confirm_" + runtime, p.id)
-        return [emit(user_id, f"<b>تأیید نهایی خرید</b>\nپلن: {html.escape(p.name)}\n" +
-                     f"پنل: {runtime}\nمبلغ: {p.price_toman:,} تومان\n" +
-                     "پس از پرداخت، نصب واقعی تا فعال‌شدن اتصال فنی در وضعیت آماده‌سازی خواهد بود.",
-                     kb([[("تأیید و پرداخت از کیف پول", f"pay:{p.id}:{runtime}", 'success')], [("لغو", "home")]]))]
+            return [emit(user_id, 'درخواست معتبر نیست.', kb(navigation('shop')))]
+        plan = db.get(Plan, pid)
+        runtime_names = {'pasarguard': 'پاسارگارد', 'rebecca': 'ربکا',
+                         'marzban': 'مرزبان'}
+        if not plan or not plan.enabled or runtime not in runtime_names:
+            return [emit(user_id, 'پلن یا نوع پنل معتبر نیست.',
+                         kb(navigation('shop')))]
+        if not available_slots(db, plan):
+            return [emit(user_id, 'ظرفیت این پلن تمام شده است.',
+                         kb(navigation('shop')))]
+        balance = get_balance(db, user_id)
+        body = (titlebar('پیش‌فاکتور خرید', 'SECURE CHECKOUT') +
+                '\n<b>خلاصه سفارش</b>\n'
+                f'📦 نود: <b>{html.escape(plan.name)}</b>\n'
+                f'⚙️ نوع پنل: <b>{runtime_names[runtime]}</b>\n'
+                f'📅 اعتبار: <b>{plan.term_days} روز</b>\n'
+                f'💰 مبلغ نهایی: <b>{plan.price_toman:,} تومان</b>\n'
+                f'💳 موجودی کیف پول: <b>{balance:,} تومان</b>\n\n'
+                f'{SEPARATOR}\n'
+                '🛡 <i>ثبت سفارش به معنی تحویل آنی سرور نیست. '
+                'تحویل فقط پس از آماده‌سازی و تست فنی تأیید می‌شود.</i>')
+        if balance < plan.price_toman:
+            clear_state(db, user_id)
+            text = body + ('\n\n<b>اعتبار کیف پول کافی نیست.</b>\n'
+                     'شارژ آنلاین هنوز فعال نشده است؛ برای راهنمایی تیکت ثبت کن.')
+            return [emit(user_id, text, kb([[('🎧 پشتیبانی', 'support'),
+                     ('💳 کیف پول', 'wallet')]] + navigation('plan:' + pid)))]
+        set_state(db, user_id, 'confirm_' + runtime, plan.id)
+        return [emit(user_id, body, kb([[('✅ تأیید و پرداخت از کیف پول',
+                        f'pay:{plan.id}:{runtime}', 'success')]] +
+                        navigation('plan:' + pid)))]
     if data.startswith("pay:"):
         try:
             _, pid, runtime = data.split(":")
@@ -215,34 +442,56 @@ def process_update(db, update: dict):
         clear_state(db, user_id)
         return [emit(user_id, f"<b>پرداخت ثبت شد.</b>\nشماره سفارش: <code>{order.id}</code>\n" +
                      "وضعیت: منتظر آماده‌سازی فنی (هنوز نود تحویل نشده است).", HOME)]
-    if data == "mine":
-        rows = db.scalars(select(Subscription).where(Subscription.user_id == user_id).order_by(
-            Subscription.started_at.desc())).all()
-        options = [[(f"{s.runtime_type or 'نود'} • {s.status}", "sub:" + s.id)] for s in rows]
-        options.append([("بازگشت", "home")])
-        return [emit(user_id, "<b>▤ سرویس‌های من</b>\n\n" +
-                     ("یک سرویس را برای مشاهده مشخصات و وضعیت انتخاب کنید." if len(options) > 1 else
-                      "هنوز سرویس فعالی ندارید. از فروشگاه نود موردنظر را انتخاب کنید."), kb(options))]
-    if data.startswith("sub:"):
+
+    if data == 'mine':
+        subscriptions = db.scalars(select(Subscription).where(
+            Subscription.user_id == user_id).order_by(
+            Subscription.started_at.desc()).limit(8)).all()
+        buttons = [[('📦 ' + (sub.runtime_type or 'نود').upper() + ' · ' +
+                     ('فعال' if sub.status == 'active' else 'در حال آماده‌سازی'
+                      if sub.status == 'provisioning' else sub.status[:15]),
+                     'sub:' + sub.id)] for sub in subscriptions]
+        buttons += [[('🛍 خرید نود جدید', 'shop', 'primary')]]
+        buttons += navigation('home')
+        body = (titlebar('سرویس‌های من', 'MY CLOUD NODES') +
+                '\n<b>اشتراک‌ها و وضعیت تحویل</b>\n' +
+                ('\n'.join('• <b>' + html.escape(sub.runtime_type or 'نود') +
+                            '</b> · ' + status_fa(sub.status)
+                            for sub in subscriptions) or
+                 'هنوز سرویسی ثبت نشده است. از فروشگاه شروع کن.') +
+                '\n\n<i>جزئیات هر سرویس را با دکمه مربوط به آن ببین.</i>')
+        return [emit(user_id, body, kb(buttons))]
+
+    if data.startswith('sub:'):
         sub = db.get(Subscription, data[4:])
         if not sub or sub.user_id != user_id:
-            return [emit(user_id, "اشتراک یافت نشد", HOME)]
+            return [emit(user_id, 'اشتراک پیدا نشد.', kb(navigation('mine')))]
         slot = db.get(Slot, sub.slot_id)
-        host = db.get(Host, slot.host_id)
-        detail = (f"<b>اشتراک نود</b>\nنوع: {html.escape(sub.runtime_type or '')}\n" +
-                  f"وضعیت: {html.escape(sub.status)}\nسرور: {html.escape(host.name)}\n" +
-                  f"تاریخ پایان: {sub.ends_at.date()}\nIP: <code>{html.escape(sub.public_ip or 'در انتظار تحویل')}</code>\n" +
-                  "رمز SSH یا root برای نود اشتراکی ارائه نمی‌شود.")
-        actions = [[("ریستارت مشترک", "op:restart_host:" + host.id),
-                    ("تغییر IP", "op:change_shared_ip:" + host.id)],
-                   [("خاموش‌کردن میزبان", "op:power_off:" + host.id),
-                    ("روشن‌کردن میزبان", "op:power_on:" + host.id)],
-                   [("بازگشت", "mine")]]
-        keyboard = kb(actions)
+        host = db.get(Host, slot.host_id) if slot else None
+        if not host:
+            return [emit(user_id, 'اطلاعات میزبان در دسترس نیست.',
+                         kb(navigation('mine')))]
+        body = (titlebar('جزئیات نود اختصاصی', 'SERVICE DETAILS') +
+                '\n📦 نوع پنل: <b>' + html.escape(sub.runtime_type or 'نامشخص') +
+                '</b>\n'
+                '📊 وضعیت: ' + status_fa(sub.status) + '\n'
+                '🖥 میزبان: <b>' + html.escape(host.name) + '</b>\n'
+                '📅 پایان اعتبار: <b>' + str(sub.ends_at.date()) + '</b>\n'
+                '🌐 آدرس IP: <code>' +
+                html.escape(sub.public_ip or 'در انتظار تحویل') + '</code>\n\n'
+                '🔒 <i>دسترسی SSH و root در سرویس اشتراکی تحویل داده نمی‌شود.</i>')
+        buttons = []
         if sub.public_ip:
-            keyboard['inline_keyboard'].insert(0,[{
-                'text': 'کپی آدرس IP', 'copy_text': {'text': sub.public_ip}}])
-        return [emit(user_id, detail, keyboard)]
+            buttons.append([{'text':'📋 کپی آدرس IP',
+                              'copy_text':{'text':sub.public_ip}}])
+        actions = kb([[('🔄 درخواست ریستارت', 'op:restart_host:' + host.id),
+                       ('🌐 درخواست تغییر IP', 'op:change_shared_ip:' + host.id)],
+                      [('⏻ خاموش‌کردن', 'op:power_off:' + host.id),
+                       ('⏽ روشن‌کردن', 'op:power_on:' + host.id)]] +
+                      navigation('mine'))
+        actions['inline_keyboard'] = buttons + actions['inline_keyboard']
+        return [emit(user_id, body + '\n\n<i>عملیات مشترک فقط پس از رأی همه مالکان و بررسی فنی قابل اجراست.</i>',
+                     actions)]
     if data.startswith("op:"):
         try:
             _, action, host_id = data.split(":")
@@ -256,13 +505,23 @@ def process_update(db, update: dict):
                      "این دلیل برای سایر مالکان همان سرور ارسال می‌شود.\n" +
                      "هیچ دستور واقعی پیش از تأیید همه مالکان و تست فنی اجرا نمی‌شود.",
                      kb([[('انصراف','home')]]))]
-    if data == "votebox":
-        ops = db.scalars(select(Operation).where(Operation.status == "pending_approval").order_by(
-            Operation.created_at.desc()).limit(100)).all()
-        rows = [[(f"{op.action} - {op.id[:6]}", "vinfo:" + op.id)] for op in ops
-                if user_id in op.owners_snapshot and op.requester_id != user_id]
-        rows.append([("بازگشت", "home")])
-        return [emit(user_id, "<b>رأی‌های در انتظار شما</b>", kb(rows))]
+
+    if data == 'votebox':
+        ops = db.scalars(select(Operation).where(
+            Operation.status == 'pending_approval')
+            .order_by(Operation.created_at.desc()).limit(100)).all()
+        visible = [op for op in ops if user_id in op.owners_snapshot
+                   and op.requester_id != user_id]
+        rows = [[('🗳 ' + ACTIONS_FA.get(op.action, op.action)[:26] +
+                 ' · ' + op.id[:6], 'vinfo:' + op.id)] for op in visible[:8]]
+        rows += navigation('home')
+        body = (titlebar('مدیریت مشترک نودها', 'SHARED OPERATIONS') +
+                '\n<b>درخواست‌های نیازمند رأی شما</b>\n'
+                f'🗳 تعداد درخواست‌ها: <b>{len(visible)}</b>\n\n'
+                + ('برای مشاهده دلیل و ثبت رأی، درخواست را انتخاب کن.'
+                   if visible else 'در حال حاضر درخواست منتظر رأی ندارید.') +
+                '\n\n<i>هیچ عملیات واقعی بدون توافق مالکان و تست اتصال اجرا نمی‌شود.</i>')
+        return [emit(user_id, body, kb(rows))]
     if data.startswith("vinfo:"):
         op = db.get(Operation, data[6:])
         if not op or user_id not in op.owners_snapshot or user_id == op.requester_id:

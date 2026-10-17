@@ -422,3 +422,102 @@ def test_outbox_keeps_message_until_retry_succeeds(monkeypatch):
     with SessionLocal() as db:
         msg = db.scalar(select(TelegramOutbox))
         assert msg.status == 'sent' and msg.attempts == 2
+
+
+def test_premium_bot_menu_guide_and_safe_keyboard():
+    from app.telegram import process_update
+    with SessionLocal() as db:
+        uid = 74001
+        def msg(text):
+            return {'message': {'text': text, 'from': {
+                'id': uid, 'first_name': 'Customer'},
+                'chat': {'id': uid, 'type': 'private'}}}
+        def cb(code):
+            return {'callback_query': {'data': code, 'from': {'id': uid},
+                    'message': {'message_id': 31,
+                                'chat': {'id': uid, 'type': 'private'}}}}
+        home = process_update(db, msg('/start'))[0]
+        assert 'گنج VPS' in home['text']
+        assert 'موجودی کیف پول' in home['text']
+        buttons = [button for row in home['reply_markup']['inline_keyboard']
+                   for button in row]
+        assert any(button.get('callback_data') == 'shop' and
+                   button.get('style') == 'primary' for button in buttons)
+        assert any(button.get('callback_data') == 'guide' for button in buttons)
+        assert all(len(button.get('callback_data', '')) <= 64 for button in buttons)
+        guide = process_update(db, cb('guide'))[0]
+        assert 'درگاه شارژ' in guide['text']
+        assert 'SSH' in guide['text']
+
+
+def test_premium_bot_catalog_filters_are_real_and_wallet_checkout_guard():
+    from app.telegram import process_update
+    _, plan = setup_host(capacity=2)
+    uid = 74002
+    def cb(code):
+        return {'callback_query': {'data': code, 'from': {'id': uid,
+                  'first_name': 'Customer'},
+                'message': {'message_id': 32,
+                            'chat': {'id': uid, 'type': 'private'}}}}
+    with SessionLocal() as db:
+        all_items = process_update(db, cb('shop'))[0]
+        assert 'پلن‌های موجود: <b>1</b>' in all_items['text']
+        flat = [b for row in all_items['reply_markup']['inline_keyboard'] for b in row]
+        assert any(b.get('callback_data') == 'plan:' + plan for b in flat)
+        assert len(flat) <= 15
+        empty = process_update(db, cb('shopcat:3:0'))[0]
+        assert 'پلن‌های موجود: <b>0</b>' in empty['text']
+        assert all(b.get('callback_data') != 'plan:' + plan
+                   for row in empty['reply_markup']['inline_keyboard'] for b in row)
+        detail = process_update(db, cb('plan:' + plan))[0]
+        assert '300,000 تومان' in detail['text']
+        confirm = process_update(db, cb('runtime:' + plan + ':rebecca'))[0]
+        assert 'اعتبار کیف پول کافی نیست' in confirm['text']
+        assert 'pay:' not in str(confirm['reply_markup'])
+        # Bot shows real billing, not invented inventory or instant activation.
+        assert 'تحویل آنی' in confirm['text']
+        db.commit()
+    credit(uid)
+    with SessionLocal() as db:
+        process_update(db, cb('plan:' + plan))
+        confirmed = process_update(db, cb('runtime:' + plan + ':rebecca'))[0]
+        actions = [b.get('callback_data', '') for row in confirmed['reply_markup']['inline_keyboard']
+                   for b in row]
+        assert 'pay:' + plan + ':rebecca' in actions
+        assert '800,000 تومان' in confirmed['text']
+
+
+def test_premium_bot_owner_reporting_and_customer_access_boundary():
+    from app.telegram import process_update
+    from app.config import config
+    owner = config.owner_id
+    assert owner > 0
+    with SessionLocal() as db:
+        def cb(uid, action):
+            return {'callback_query': {'data': action, 'from': {
+                    'id': uid, 'first_name': 'Tester'},
+                    'message': {'message_id': 37,
+                                'chat': {'id': uid, 'type': 'private'}}}}
+        denied = process_update(db, cb(74003, 'admin:finance'))
+        assert 'دسترسی مجاز نیست' in denied[0]['text']
+        admin_screen = process_update(db, cb(owner, 'admin'))[0]
+        assert 'گنج VPS' in admin_screen['text']
+        admin_report = process_update(db, cb(owner, 'admin:finance'))[0]
+        assert 'نه سود خالص' in admin_report['text']
+        users = process_update(db, cb(owner, 'admin:users'))[0]
+        assert 'کاربران ثبت‌شده' in users['text']
+
+
+def test_premium_bot_user_display_name_escaped():
+    from app.telegram import process_update
+    uid = 74004
+    with SessionLocal() as db:
+        start = {'message': {'text': '/start', 'from': {
+            'id': uid, 'first_name': '<script>alert(1)</script>'},
+            'chat': {'id': uid, 'type': 'private'}}}
+        process_update(db, start)
+        out = process_update(db, {'callback_query': {'data': 'account',
+                      'from': {'id': uid}, 'message': {'message_id': 19,
+                      'chat': {'id': uid, 'type': 'private'}}}})[0]
+        assert '<script>' not in out['text']
+        assert '&lt;script&gt;' in out['text']
