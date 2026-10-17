@@ -651,3 +651,151 @@ def test_category_rtl_visual_order_contract():
         assert 'دو نفره' in rows[0][1]['text']
         assert 'سه نفره' in rows[1][1]['text']
         assert 'همه نودها' in rows[2][1]['text']
+
+def test_admin_provisioning_queue_is_readonly_and_restricted():
+    _, plan = setup_host(capacity=2)
+    credit(76001)
+    client_user, order = buy(76001, plan)
+    denied = client_user.get('/api/v1/admin/provisioning/jobs')
+    assert denied.status_code == 403
+    r = client.get('/api/v1/admin/provisioning/jobs', headers=admin)
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload['execution_enabled'] is False
+    assert payload['runtimes']['pasarguard']['status'] == 'trial_needed'
+    assert payload['runtimes']['rebecca']['status'] == 'poc_needed'
+    assert payload['runtimes']['marzban']['status'] == 'poc_needed'
+    assert len(payload['jobs']) == 1
+    assert payload['jobs'][0]['order_id'] == order['id']
+    assert client_user.get('/api/v1/admin/provisioning/orders/' + order['id'] +
+                           '/preflight').status_code == 403
+
+
+def test_pasarguard_preflight_fails_closed_without_trial_agent():
+    _, plan = setup_host(capacity=2)
+    credit(76002)
+    _, order = buy(76002, plan)
+    with SessionLocal() as db:
+        from app.models import PortLease, ProvisionJob
+        from app.provisioning import preflight_order
+        job = db.scalar(select(ProvisionJob).where(ProvisionJob.order_id == order['id']))
+        before = db.query(PortLease).count()
+        result = preflight_order(db, order['id'])
+        assert result.runtime == 'pasarguard'
+        assert result.allowed_to_execute is False
+        assert result.candidate_ports == (30000, 30001)
+        assert result.memory_mb == 1920
+        assert 'host_not_enrolled_as_trial' in result.blocked_by
+        assert 'authenticated_trial_agent_missing' in result.blocked_by
+        assert 'pinned_installer_and_agent_executor_not_integrated' in result.blocked_by
+        assert 'production_safety_interlock_active' in result.blocked_by
+        assert db.query(PortLease).count() == before
+        assert db.get(ProvisionJob, job.id).state == 'awaiting_connector'
+        assert result.admin_view()['allowed_to_execute'] is False
+        assert 'private_ip' not in result.admin_view()
+    resp = client.get('/api/v1/admin/provisioning/orders/' + order['id'] +
+                      '/preflight', headers=admin)
+    assert resp.status_code == 200
+    assert resp.json()['proposed_service_ports'] == [30000, 30001]
+    assert 'no node has been installed' in resp.json()['note'].lower()
+
+
+def test_provisioning_candidate_ports_skip_db_lease_and_live_bound_ports():
+    from app.models import PortLease, Host, Slot
+    from app.provisioning import candidate_port_pair, preflight_order, Probe
+    host, plan = setup_host(capacity=3)
+    credit(76003)
+    _, order = buy(76003, plan)
+    class VerifiedFake:
+        def verify(self, _):
+            return Probe(reachable=True, trial_agent_verified=True,
+                         os_id='ubuntu', architecture='x86_64',
+                         cgroup_v2=True, docker_available=True,
+                         bound_tcp_ports=frozenset({30002,30003}))
+    with SessionLocal() as db:
+        h = db.get(Host, host)
+        h.capabilities = {'purpose': 'trial-node'}
+        db.add(PortLease(host_id=host, slot_id=db.scalar(
+            select(Slot.id).where(Slot.host_id == host).limit(1)),
+            ip=h.ip, protocol='tcp', port=30000, purpose='service'))
+        db.commit()
+        assert candidate_port_pair(db, h, frozenset({30002,30003})) == (30004,30005)
+        check = preflight_order(db, order['id'], VerifiedFake())
+        assert check.candidate_ports == (30004,30005)
+        assert 'authenticated_trial_agent_missing' not in check.blocked_by
+        assert 'production_safety_interlock_active' in check.blocked_by
+        assert check.allowed_to_execute is False
+        # Read-only preflight cannot reserve or install any ports.
+        assert db.query(PortLease).count() == 1
+
+
+def test_rebecca_and_marzban_require_independent_runtime_poc():
+    from app.provisioning import preflight_order
+    for number, runtime in enumerate(('rebecca', 'marzban')):
+        _, plan = setup_host(capacity=2)
+        buyer = 76010 + number
+        credit(buyer)
+        session = login(buyer)
+        result = session.post('/api/v1/orders', json={
+            'plan_id': plan, 'runtime': runtime,
+            'idempotency_key': 'trial-poc-' + runtime})
+        assert result.status_code == 200, result.text
+        with SessionLocal() as db:
+            preflight = preflight_order(db, result.json()['id'])
+            assert 'runtime_coexistence_poc_not_approved' in preflight.blocked_by
+            assert not preflight.allowed_to_execute
+
+
+def test_bot_provisioning_owner_summary_is_informational_only():
+    from app.telegram import process_update
+    from app.config import config
+    with SessionLocal() as db:
+        def cb(uid, action):
+            return {'callback_query': {'data': action, 'from': {'id': uid},
+                         'message': {'message_id': 68,
+                                     'chat': {'id': uid, 'type': 'private'}}}}
+        denied = process_update(db, cb(77010, 'admin:provisioning'))[0]
+        assert 'دسترسی مجاز نیست' in denied['text']
+        owner = process_update(db, cb(config.owner_id, 'admin:provisioning'))[0]
+        assert 'مرکز نصب و تحویل نودها' in owner['text']
+        assert 'فرمان نصب واقعی صادر نمی‌شود' in owner['text']
+        menu = process_update(db, cb(config.owner_id, 'admin'))[0]
+        assert any(b.get('callback_data') == 'admin:provisioning'
+                   for row in menu['reply_markup']['inline_keyboard'] for b in row)
+
+
+def test_bot_scoped_staff_permissions_prevent_admin_data_leaks():
+    from app.telegram import process_update
+    from app.models import AdminPermission
+    from app.services import user_get_or_create
+    staff = 78001
+    with SessionLocal() as db:
+        user_get_or_create(db, staff, 'Staff')
+        db.add(AdminPermission(user_id=staff, permission='tickets.read',
+                               department='support'))
+        db.commit()
+        def cb(action):
+            return {'callback_query': {'data': action, 'from': {'id': staff},
+                      'message': {'message_id': 88,
+                                  'chat': {'id': staff, 'type': 'private'}}}}
+        home = process_update(db, cb('home'))[0]
+        assert any(b.get('callback_data') == 'admin'
+                   for row in home['reply_markup']['inline_keyboard'] for b in row)
+        menu = process_update(db, cb('admin'))[0]
+        actions = {b.get('callback_data') for row in menu['reply_markup']['inline_keyboard']
+                   for b in row}
+        assert 'admin:tickets' in actions
+        assert 'admin:finance' not in actions
+        assert 'admin:provisioning' not in actions
+        assert 'admin:users' not in actions
+        view = process_update(db, cb('admin:tickets'))[0]
+        assert 'درخواست‌های پشتیبانی' in view['text']
+        for forbidden in ('admin:finance', 'admin:users',
+                          'admin:provisioning', 'admin:orders'):
+            assert 'دسترسی مجاز نیست' in process_update(db, cb(forbidden))[0]['text']
+        # Restricting the staff member or removing their permission takes
+        # effect immediately; no cached menu authorization remains.
+        row = db.get(AdminPermission, (staff, 'tickets.read'))
+        db.delete(row)
+        db.commit()
+        assert 'دسترسی مجاز نیست' in process_update(db, cb('admin:tickets'))[0]['text']
