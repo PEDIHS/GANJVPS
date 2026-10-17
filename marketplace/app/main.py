@@ -13,7 +13,7 @@ from app.db import init_db, get_db, SessionLocal
 from app.auth import validate_webapp_init_data, make_session, get_actor, csrf_guard, csrf_token, permission_for
 from app.services import (create_host, create_plan, purchase, get_balance, adjust_wallet,
                          available_slots, owner_ids, request_operation, vote, audit, user_get_or_create)
-from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, utcnow
+from app.models import Host, Slot, Plan, Order, Subscription, Operation, Ticket, ProvisionJob, WalletEntry, User, Audit, TicketMessage, utcnow
 
 @asynccontextmanager
 async def lifespan(app):
@@ -162,6 +162,38 @@ def add_plan(body: PlanCreate, actor: int = Depends(permission_for("plans.manage
             db.rollback()
             raise
 
+@app.get("/api/v1/admin/plans")
+def admin_list_plans(actor: int = Depends(permission_for("plans.manage")), db: Session = Depends(get_db)):
+    plans = db.scalars(select(Plan).order_by(Plan.name, Plan.id)).all()
+    return [{"id": p.id, "name": p.name, "region": p.region, "capacity": p.capacity,
+             "price_toman": p.price_toman, "term_days": p.term_days,
+             "enabled": p.enabled, "available": len(available_slots(db, p))} for p in plans]
+
+
+class PlanEdit(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=180)
+    price_toman: int | None = Field(default=None, gt=0)
+    term_days: int | None = Field(default=None, ge=1, le=365)
+    enabled: bool | None = None
+
+
+@app.patch("/api/v1/admin/plans/{plan_id}")
+def admin_edit_plan(plan_id: str, body: PlanEdit,
+                    actor: int = Depends(permission_for("plans.manage"))):
+    values = body.model_dump(exclude_unset=True)
+    if not values or any(value is None for value in values.values()):
+        raise HTTPException(422, "فیلدهای ویرایش نامعتبرند")
+    with SessionLocal() as db:
+        plan = db.scalar(select(Plan).where(Plan.id == plan_id).with_for_update())
+        if not plan:
+            raise HTTPException(404, "پلن پیدا نشد")
+        for key, value in values.items():
+            setattr(plan, key, value)
+        audit(db, actor, "plan.updated", plan.id, fields=sorted(values.keys()))
+        db.commit()
+        return {"ok": True, "id": plan.id, "enabled": plan.enabled}
+
+
 class WalletAdjustment(BaseModel):
     user_id: int
     amount_toman: int
@@ -292,6 +324,98 @@ def admin_audit(actor: int = Depends(permission_for("reports.read")), db: Sessio
     rows = db.scalars(select(Audit).order_by(Audit.created_at.desc()).limit(80)).all()
     return [{"event": a.event, "actor_id": a.actor_id, "entity_id": a.entity_id,
              "created_at": a.created_at.isoformat()} for a in rows]
+
+def ticket_message_view(row: TicketMessage):
+    return {"id": row.id, "body": row.body, "author_id": row.author_id,
+            "is_staff": row.is_staff, "created_at": row.created_at.isoformat()}
+
+
+def ticket_view(db: Session, ticket: Ticket):
+    messages = db.scalars(select(TicketMessage).where(TicketMessage.ticket_id == ticket.id)
+                          .order_by(TicketMessage.created_at, TicketMessage.id)).all()
+    return {"id": ticket.id, "user_id": ticket.user_id, "subject": ticket.subject,
+            "message": ticket.message, "status": ticket.status,
+            "created_at": ticket.created_at.isoformat(),
+            "messages": [ticket_message_view(m) for m in messages]}
+
+
+@app.get("/api/v1/tickets/{ticket_id}")
+def get_ticket_thread(ticket_id: str, actor: int = Depends(get_actor),
+                      db: Session = Depends(get_db)):
+    ticket = db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    if actor != ticket.user_id:
+        from app.services import require_permission
+        require_permission(db, actor, "tickets.read")
+    return ticket_view(db, ticket)
+
+
+class TicketReply(BaseModel):
+    message: str = Field(min_length=2, max_length=4000)
+
+
+@app.post("/api/v1/tickets/{ticket_id}/messages")
+def ticket_customer_reply(ticket_id: str, body: TicketReply,
+                          actor: int = Depends(csrf_guard)):
+    with SessionLocal() as db:
+        ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id).with_for_update())
+        if not ticket or ticket.user_id != actor:
+            raise HTTPException(404, "تیکت پیدا نشد")
+        if ticket.status == "closed":
+            raise HTTPException(409, "این تیکت بسته شده است")
+        item = TicketMessage(ticket_id=ticket.id, author_id=actor, body=body.message.strip(), is_staff=False)
+        if len(item.body) < 2:
+            raise HTTPException(422, "متن پاسخ کوتاه است")
+        db.add(item)
+        ticket.status = "waiting_support"
+        db.flush()
+        audit(db, actor, "ticket.customer_replied", ticket.id)
+        db.commit()
+        return ticket_message_view(item)
+
+
+@app.post("/api/v1/admin/tickets/{ticket_id}/reply")
+def admin_ticket_reply(ticket_id: str, body: TicketReply,
+                       actor: int = Depends(permission_for("tickets.manage"))):
+    with SessionLocal() as db:
+        ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id).with_for_update())
+        if not ticket:
+            raise HTTPException(404, "تیکت پیدا نشد")
+        if ticket.status == "closed":
+            raise HTTPException(409, "ابتدا وضعیت تیکت را باز کنید")
+        user_get_or_create(db, actor)
+        item = TicketMessage(ticket_id=ticket.id, author_id=actor,
+                             body=body.message.strip(), is_staff=True)
+        if len(item.body) < 2:
+            raise HTTPException(422, "متن پاسخ کوتاه است")
+        db.add(item)
+        ticket.status = "answered"
+        db.flush()
+        audit(db, actor, "ticket.staff_replied", ticket.id, customer_id=ticket.user_id)
+        db.commit()
+        return ticket_message_view(item)
+
+
+class TicketStatusChange(BaseModel):
+    status: str
+
+
+@app.patch("/api/v1/admin/tickets/{ticket_id}/status")
+def admin_ticket_status(ticket_id: str, body: TicketStatusChange,
+                        actor: int = Depends(permission_for("tickets.manage"))):
+    if body.status not in {"open", "in_progress", "answered", "closed"}:
+        raise HTTPException(422, "وضعیت معتبر نیست")
+    with SessionLocal() as db:
+        ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id).with_for_update())
+        if not ticket:
+            raise HTTPException(404, "تیکت پیدا نشد")
+        previous = ticket.status
+        ticket.status = body.status
+        audit(db, actor, "ticket.status_changed", ticket.id, old=previous, new=body.status)
+        db.commit()
+        return {"ok": True, "id": ticket.id, "status": ticket.status}
+
 
 @app.get("/api/v1/admin/summary")
 def dashboard(actor: int = Depends(permission_for("reports.read")), db: Session = Depends(get_db)):

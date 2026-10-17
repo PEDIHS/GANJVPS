@@ -289,3 +289,89 @@ def test_concurrent_host_requests_allow_only_one_pending_operation():
     assert statuses == [200, 409]
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(Operation)) == 1
+
+
+
+def test_plan_pause_edit_and_price_history():
+    _, plan_id = setup_host()
+    credit(21001)
+    customer, order = buy(21001, plan_id)
+    new_price = 450000
+    updated = client.patch('/api/v1/admin/plans/' + plan_id, headers=admin,
+                           json={'name': 'DE Premium', 'price_toman': new_price,
+                                 'term_days': 45, 'enabled': False})
+    assert updated.status_code == 200, updated.text
+    plans = client.get('/api/v1/admin/plans', headers=admin).json()
+    assert plans[0]['name'] == 'DE Premium'
+    assert plans[0]['enabled'] is False
+    assert plans[0]['price_toman'] == new_price
+    assert client.get('/api/v1/catalog').json() == []
+    assert customer.get('/api/v1/orders/' + order['id']).json()['amount_toman'] == 300000
+    assert customer.post('/api/v1/orders', json={'plan_id': plan_id,
+        'runtime': 'marzban', 'idempotency_key': 'new-purchase-disabled-plan'}).status_code == 404
+    assert client.patch('/api/v1/admin/plans/' + plan_id, headers=admin,
+                        json={'price_toman': -1}).status_code == 422
+    assert client.patch('/api/v1/admin/plans/' + plan_id, headers=admin,
+                        json={'name': None}).status_code == 422
+    assert client.patch('/api/v1/admin/plans/' + plan_id, headers=admin,
+                        json={'enabled': True}).json()['enabled'] is True
+    assert len(client.get('/api/v1/catalog').json()) == 1
+
+
+def test_support_thread_reply_status_and_customer_access():
+    customer = login(22001)
+    new = customer.post('/api/v1/tickets', json={
+        'subject': 'Cannot connect to node',
+        'message': 'Since this afternoon the node is not responding.'})
+    assert new.status_code == 200
+    ticket_id = new.json()['id']
+    peer = login(22002)
+    assert peer.get('/api/v1/tickets/' + ticket_id).status_code == 403
+    assert peer.post('/api/v1/tickets/' + ticket_id + '/messages',
+                     json={'message': 'I should not access this'}).status_code == 404
+    assert peer.post('/api/v1/admin/tickets/' + ticket_id + '/reply',
+                     json={'message': 'I am not staff'}).status_code == 403
+    admin_reply = client.post('/api/v1/admin/tickets/' + ticket_id + '/reply',
+                              json={'message': 'Please retry now.'}, headers=admin)
+    assert admin_reply.status_code == 200, admin_reply.text
+    assert admin_reply.json()['is_staff'] is True
+    thread = customer.get('/api/v1/tickets/' + ticket_id).json()
+    assert thread['status'] == 'answered'
+    assert len(thread['messages']) == 1
+    assert thread['messages'][0]['body'] == 'Please retry now.'
+    user_reply = customer.post('/api/v1/tickets/' + ticket_id + '/messages',
+                               json={'message': 'Still not working.'})
+    assert user_reply.status_code == 200
+    thread = customer.get('/api/v1/tickets/' + ticket_id).json()
+    assert thread['status'] == 'waiting_support'
+    assert len(thread['messages']) == 2
+    assert client.patch('/api/v1/admin/tickets/' + ticket_id + '/status',
+                        json={'status': 'closed'}, headers=admin).status_code == 200
+    assert customer.post('/api/v1/tickets/' + ticket_id + '/messages',
+                         json={'message': 'After closure'}).status_code == 409
+    assert client.post('/api/v1/admin/tickets/' + ticket_id + '/reply',
+                       json={'message': 'Should reopen'}, headers=admin).status_code == 409
+    assert client.patch('/api/v1/admin/tickets/' + ticket_id + '/status',
+                        json={'status': 'open'}, headers=admin).status_code == 200
+    assert customer.post('/api/v1/tickets/' + ticket_id + '/messages',
+                         json={'message': 'Reopened thread message'}).status_code == 200
+
+
+def test_admin_support_and_plan_rbac_and_invalid_status():
+    _, plan_id = setup_host()
+    customer = login(23001)
+    opened = customer.post('/api/v1/tickets', json={
+        'subject': 'Subscription questions',
+        'message': 'I have some questions about my subscription.'})
+    tid = opened.json()['id']
+    for path in ('/api/v1/admin/plans',):
+        assert customer.get(path).status_code == 403
+    assert customer.patch('/api/v1/admin/plans/' + plan_id,
+                          json={'enabled': False}).status_code == 403
+    assert customer.patch('/api/v1/admin/tickets/' + tid + '/status',
+                          json={'status': 'closed'}).status_code == 403
+    assert client.patch('/api/v1/admin/tickets/' + tid + '/status',
+                        json={'status': 'invalid'}, headers=admin).status_code == 422
+    assert client.post('/api/v1/admin/tickets/' + tid + '/reply',
+                       json={'message': ' '}, headers=admin).status_code == 422
+    assert len(customer.get('/api/v1/tickets/' + tid).json()['messages']) == 0

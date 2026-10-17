@@ -173,6 +173,16 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class TicketMessage(Base):
+    __tablename__ = "ticket_messages"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("tickets.id"), index=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    body: Mapped[str] = mapped_column(Text)
+    is_staff: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Audit(Base):
     __tablename__ = "audit"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uid)
