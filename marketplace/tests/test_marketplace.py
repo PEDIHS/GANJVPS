@@ -442,7 +442,10 @@ def test_premium_bot_menu_guide_and_safe_keyboard():
         buttons = [button for row in home['reply_markup']['inline_keyboard']
                    for button in row]
         assert any(button.get('callback_data') == 'shop' and
-                   button.get('style') == 'primary' for button in buttons)
+                   button.get('style') == 'success' for button in buttons)
+        assert all(button.get('style') == 'primary' for button in buttons
+                   if button.get('callback_data') in {'wallet', 'mine'})
+        assert not any(button.get('callback_data') == 'votebox' for button in buttons)
         assert any(button.get('callback_data') == 'guide' for button in buttons)
         assert all(len(button.get('callback_data', '')) <= 64 for button in buttons)
         guide = process_update(db, cb('guide'))[0]
@@ -461,10 +464,22 @@ def test_premium_bot_catalog_filters_are_real_and_wallet_checkout_guard():
                             'chat': {'id': uid, 'type': 'private'}}}}
     with SessionLocal() as db:
         all_items = process_update(db, cb('shop'))[0]
-        assert 'پلن‌های موجود: <b>1</b>' in all_items['text']
-        flat = [b for row in all_items['reply_markup']['inline_keyboard'] for b in row]
-        assert any(b.get('callback_data') == 'plan:' + plan for b in flat)
-        assert len(flat) <= 15
+        assert 'جمع موجودی قابل سفارش: <b>2 نود</b>' in all_items['text']
+        board = all_items['reply_markup']['inline_keyboard']
+        assert [r[0]['callback_data'] for r in board[:3]] == [
+            'shopcat:2:0', 'shopcat:3:0', 'shopcat:all:0']
+        assert [r[1]['callback_data'] for r in board[:3]] == [
+            'shopcat:2:0', 'shopcat:3:0', 'shopcat:all:0']
+        assert [r[1]['text'] for r in board[:3]] == ['2 عدد', '0 عدد', '2 عدد']
+        assert not any(b.get('callback_data') == 'plan:' + plan
+                       for row in board for b in row)
+        selected = process_update(db, cb('shopcat:2:0'))[0]
+        assert 'پلن‌های موجود: <b>1</b>' in selected['text']
+        assert any(b.get('callback_data') == 'plan:' + plan
+                   for row in selected['reply_markup']['inline_keyboard']
+                   for b in row)
+        assert any(b.get('style') == 'danger' for row in board
+                   for b in row if 'بازگشت' in b['text'])
         empty = process_update(db, cb('shopcat:3:0'))[0]
         assert 'پلن‌های موجود: <b>0</b>' in empty['text']
         assert all(b.get('callback_data') != 'plan:' + plan
@@ -521,3 +536,100 @@ def test_premium_bot_user_display_name_escaped():
                       'chat': {'id': uid, 'type': 'private'}}}})[0]
         assert '<script>' not in out['text']
         assert '&lt;script&gt;' in out['text']
+
+
+def test_shop_inventory_category_counts_unique_slots_across_price_plans():
+    from app.telegram import process_update
+    _, pid = setup_host(capacity=2)
+    another = client.post('/api/v1/admin/plans',
+                          json={'name': 'DE Second Price', 'region': 'DE',
+                                'capacity': 2, 'price_toman': 250000, 'term_days': 30},
+                          headers=admin)
+    assert another.status_code == 200
+    uid = 74301
+    with SessionLocal() as db:
+        update = {'callback_query': {'data': 'shop', 'from': {'id': uid},
+                  'message': {'message_id': 40,
+                              'chat': {'id': uid, 'type': 'private'}}}}
+        result = process_update(db, update)[0]
+        rows = result['reply_markup']['inline_keyboard']
+        # The same two physical slots are offered under two price plans.
+        # Total must not be doubled to four.
+        assert rows[0][1]['text'] == '2 عدد'
+        assert rows[1][1]['text'] == '0 عدد'
+        assert rows[2][1]['text'] == '2 عدد'
+        assert len(rows[0]) == len(rows[1]) == len(rows[2]) == 2
+        assert all(row[0]['callback_data'] == row[1]['callback_data']
+                   for row in rows[:3])
+        assert rows[-1][0]['style'] == 'danger'
+        selected = process_update(db, {'callback_query': {
+            **update['callback_query'], 'data': 'shopcat:2:0'}})[0]
+        listed = [b for row in selected['reply_markup']['inline_keyboard']
+                  for b in row if b.get('callback_data', '').startswith('plan:')]
+        assert len(listed) == 4  # 2 buttons per price plan
+        assert 'پلن‌های موجود: <b>2</b>' in selected['text']
+
+
+def test_shared_requests_are_scoped_to_each_owned_service():
+    from app.telegram import process_update
+    from app.models import Host, Plan, Slot, Subscription
+    first_host, first_plan = setup_host(capacity=2)
+    second_host = client.post('/api/v1/admin/hosts', json={
+        'name': 'France Test Host', 'region': 'FR',
+        'ip': '198.51.100.77', 'capacity': 2, 'cpu': 3,
+        'ram_mb': 4096, 'reserved_ram_mb': 256, 'monthly_cost': 250000
+    }, headers=admin)
+    assert second_host.status_code == 200
+    second_host_id = second_host.json()['id']
+    second_plan = client.post('/api/v1/admin/plans', json={
+        'name': 'France Shared', 'region': 'FR', 'capacity': 2,
+        'price_toman': 300000, 'term_days': 30
+    }, headers=admin)
+    assert second_plan.status_code == 200
+    for uid in (74311, 74312, 74313):
+        credit(uid, 1000000)
+    buyer1, _ = buy(74311, first_plan)
+    buyer2, _ = buy(74312, first_plan)
+    buy(74311, second_plan.json()['id'])
+    buyer3, _ = buy(74313, second_plan.json()['id'])
+    op1 = buyer2.post('/api/v1/operations', json={
+        'host_id': first_host, 'action': 'restart_host',
+        'reason': 'Host one maintenance needed.'})
+    op2 = buyer3.post('/api/v1/operations', json={
+        'host_id': second_host_id, 'action': 'change_shared_ip',
+        'reason': 'Host two address change.'})
+    assert op1.status_code == op2.status_code == 200, (op1.text, op2.text)
+    def cb(uid, data):
+        return {'callback_query': {'data': data, 'from': {'id': uid},
+                    'message': {'message_id': 62,
+                                'chat': {'id': uid, 'type': 'private'}}}}
+    with SessionLocal() as db:
+        services = db.scalars(select(Subscription).where(
+            Subscription.user_id == 74311)).all()
+        host_to_sub = {db.get(Slot, s.slot_id).host_id: s for s in services}
+        first = host_to_sub[first_host]
+        second = host_to_sub[second_host_id]
+        assert 'votebox' not in str(process_update(db, cb(74311, 'home'))[0]['reply_markup'])
+        subpage = process_update(db, cb(74311, 'sub:' + first.id))[0]
+        assert any(b.get('callback_data') == 'shared:' + first.id
+                   for row in subpage['reply_markup']['inline_keyboard'] for b in row)
+        scope_a = process_update(db, cb(74311, 'shared:' + first.id))[0]
+        assert op1.json()['id'][:6] in str(scope_a['reply_markup'])
+        assert op2.json()['id'][:6] not in str(scope_a['reply_markup'])
+        scope_b = process_update(db, cb(74311, 'shared:' + second.id))[0]
+        assert op2.json()['id'][:6] in str(scope_b['reply_markup'])
+        assert op1.json()['id'][:6] not in str(scope_b['reply_markup'])
+        denied = process_update(db, cb(74312, 'shared:' + second.id))[0]
+        assert 'در دسترس نیست' in denied['text']
+        assert 'shared:' + second.id not in str(denied['reply_markup'])
+
+
+def test_telegram_button_color_for_all_return_paths():
+    from app.telegram import kb, navigation, home_keyboard
+    assert kb([[('انصراف', 'home')]])['inline_keyboard'][0][0]['style'] == 'danger'
+    assert kb([[('بازگشت', 'shop')]])['inline_keyboard'][0][0]['style'] == 'danger'
+    assert kb(navigation('shop'))['inline_keyboard'][0][0]['style'] == 'danger'
+    menu = [b for row in home_keyboard(74321)['inline_keyboard'] for b in row]
+    assert next(b for b in menu if b.get('callback_data') == 'shop')['style'] == 'success'
+    assert next(b for b in menu if b.get('callback_data') == 'wallet')['style'] == 'primary'
+    assert next(b for b in menu if b.get('callback_data') == 'mine')['style'] == 'primary'
